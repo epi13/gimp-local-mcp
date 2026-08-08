@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Added the real offline-by-default CLIPSeg worker in a separately managed vision environment,
+  explicit checkpoint download, conservative CPU/CUDA selection, typed OOM errors, and provider
+  readiness metadata for Torch, CUDA, device, VRAM, checkpoint, model load, and self-test state.
+- Added `separate_subject_to_layers` and `separate_concepts_to_layers`. They leave persistent named
+  subject/concept and complementary background layers, preserve and hide the unchanged source,
+  bound concepts/instances/layer counts, report overlaps conservatively, and roll back GIMP state
+  when creation or mask import fails.
+- Added exact soft-mask complement/union algebra, overlap statistics, deterministic multi-instance
+  and rollback tests, a disposable live GIMP decomposition test, and Forge claims that distinguish
+  fake bridge correctness, real provider readiness, actual inference, live layering, and unknown
+  semantic quality.
+- Expanded `doctor` to distinguish NVIDIA driver detection from provider Torch/CUDA visibility and
+  from checkpoint/model/self-test/text-segmentation readiness.
 - Added an optional local semantic-vision subsystem with typed capability/request/candidate/result
   models, bounded JSONL worker protocol, strict lossless PNG mask artifacts, resident trusted
   worker client, and an explicit provider-alpha refinement boundary. The core package remains

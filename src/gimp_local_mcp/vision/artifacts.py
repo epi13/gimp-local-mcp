@@ -170,3 +170,68 @@ def read_mask_png(path: Path) -> tuple[MaskArtifact, bytes]:
     return MaskArtifact(
         path, width, height, soft_alpha=any(0 < value < 255 for value in pixels), sha256=digest
     ), pixels
+
+
+def complement_mask_png(source: Path, destination: Path) -> MaskArtifact:
+    """Write the exact 8-bit complement of a validated mask."""
+
+    artifact, pixels = read_mask_png(source)
+    return write_mask_png(
+        destination,
+        artifact.width,
+        artifact.height,
+        bytes(255 - value for value in pixels),
+    )
+
+
+def union_mask_png(sources: list[Path], destination: Path) -> MaskArtifact:
+    """Write the soft-alpha union of validated masks using source-over alpha."""
+
+    if not sources:
+        raise MaskArtifactError("at least one source mask is required")
+    first, union = read_mask_png(sources[0])
+    combined = bytearray(union)
+    for source in sources[1:]:
+        artifact, pixels = read_mask_png(source)
+        if (artifact.width, artifact.height) != (first.width, first.height):
+            raise MaskArtifactError("mask dimensions do not match")
+        for index, value in enumerate(pixels):
+            combined[index] = 255 - round((255 - combined[index]) * (255 - value) / 255)
+    return write_mask_png(destination, first.width, first.height, bytes(combined))
+
+
+def mask_overlap_statistics(sources: list[Path], *, threshold: int = 8) -> dict[str, object]:
+    """Report overlap without assigning ownership to any independently prompted mask."""
+
+    if not 0 <= threshold <= 254:
+        raise MaskArtifactError("overlap threshold must be between 0 and 254")
+    if not sources:
+        return {
+            "mask_count": 0,
+            "overlap_pixel_count": 0,
+            "overlap_pixel_ratio": 0.0,
+            "overlap_alpha_mass": 0.0,
+            "threshold": threshold,
+        }
+    first, first_pixels = read_mask_png(sources[0])
+    pixel_sets = [first_pixels]
+    for source in sources[1:]:
+        artifact, pixels = read_mask_png(source)
+        if (artifact.width, artifact.height) != (first.width, first.height):
+            raise MaskArtifactError("mask dimensions do not match")
+        pixel_sets.append(pixels)
+    overlap_count = 0
+    overlap_mass = 0.0
+    for values in zip(*pixel_sets, strict=True):
+        active = [value for value in values if value > threshold]
+        if len(active) > 1:
+            overlap_count += 1
+            overlap_mass += min(active) / 255
+    total = first.width * first.height
+    return {
+        "mask_count": len(sources),
+        "overlap_pixel_count": overlap_count,
+        "overlap_pixel_ratio": overlap_count / total,
+        "overlap_alpha_mass": overlap_mass,
+        "threshold": threshold,
+    }

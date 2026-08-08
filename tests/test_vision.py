@@ -9,9 +9,16 @@ import pytest
 from gimp_local_mcp.config import Config
 from gimp_local_mcp.vision.artifacts import MaskArtifactError, read_mask_png, write_mask_png
 from gimp_local_mcp.vision.client import VisionClient
-from gimp_local_mcp.vision.models import BoundingBox, MaskArtifact, SegmentationRequest
+from gimp_local_mcp.vision.models import (
+    BoundingBox,
+    MaskArtifact,
+    SegmentationRequest,
+    VisionCapabilities,
+)
 from gimp_local_mcp.vision.protocol import (
+    VisionOutOfMemoryError,
     VisionProtocolError,
+    VisionUnavailableError,
     VisionWorkerError,
     decode_message,
     encode_message,
@@ -94,6 +101,63 @@ def test_provider_timeout_is_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPat
             client.segment(SegmentationRequest(input_path, prompt="fox", output_directory=tmp_path))
     finally:
         client.close()
+
+
+def test_provider_oom_and_unavailable_responses_are_distinct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "input.png"
+    write_mask_png(input_path, 8, 8, bytes([255]) * 64)
+    request = SegmentationRequest(input_path, prompt="fox", output_directory=tmp_path)
+    for mode, error_type in (
+        ("oom", VisionOutOfMemoryError),
+        ("unavailable", VisionUnavailableError),
+    ):
+        monkeypatch.setenv("FAKE_VISION_MODE", mode)
+        client = VisionClient(fake_config(), command=(sys.executable, str(FIXTURE)))
+        try:
+            with pytest.raises(error_type):
+                client.segment(request)
+        finally:
+            client.close()
+
+
+def test_fake_capabilities_report_cpu_and_readiness() -> None:
+    client = VisionClient(fake_config(), command=(sys.executable, str(FIXTURE)))
+    try:
+        capabilities = client.capabilities()
+    finally:
+        client.close()
+    assert capabilities.device == "cpu"
+    assert capabilities.cuda_available is False
+    assert capabilities.checkpoint_available is True
+    assert capabilities.model_load_success is True
+    assert capabilities.test_inference_success is True
+
+
+def test_gpu_capability_metadata_is_typed() -> None:
+    capabilities = VisionCapabilities.from_dict(
+        {
+            "provider": "mock-gpu",
+            "available": True,
+            "text_segmentation": True,
+            "cuda_available": True,
+            "device": "cuda",
+            "gpu_name": "Test GPU",
+            "compute_capability": "8.6",
+            "total_vram_bytes": 4_000_000_000,
+            "available_vram_bytes": 3_000_000_000,
+            "model_load_success": True,
+            "test_inference_success": True,
+        }
+    )
+    assert capabilities.device == "cuda"
+    assert capabilities.cuda_available is True
+    assert capabilities.total_vram_bytes == 4_000_000_000
+    with pytest.raises(ValueError, match="total_vram"):
+        VisionCapabilities.from_dict(
+            {"provider": "bad", "available": False, "total_vram_bytes": -1}
+        )
 
 
 def test_malformed_worker_response_becomes_unavailable_status(

@@ -1,5 +1,5 @@
 version = 1
-environment_allowlist = ["PATH", "LANG", "LC_ALL", "GIMP_MCP_HOST", "GIMP_MCP_PORT", "GIMP_MCP_TIMEOUT"]
+environment_allowlist = ["PATH", "LANG", "LC_ALL", "GIMP_MCP_HOST", "GIMP_MCP_PORT", "GIMP_MCP_TIMEOUT", "GIMP_MCP_VISION_PROVIDER", "GIMP_MCP_VISION_COMMAND", "GIMP_MCP_VISION_TIMEOUT", "GIMP_MCP_VISION_DEVICE", "GIMP_MCP_CLIPSEG_MODEL"]
 
 [project]
 name = "GIMP Local MCP development evidence"
@@ -55,9 +55,9 @@ version = "0.1"
 command = ["python", "tools/forge_provider.py"]
 transport = "stdio-jsonl"
 required = true
-capabilities = ["ruff-format", "ruff-check", "unit-tests", "vision-unit-tests", "live-gimp", "live-subject-isolation", "live-vision-bridge", "pip-check"]
-supported_constructs = ["fixed-command-semantic-parsing", "live-gimp-availability", "live-subject-isolation-evidence"]
-unsupported_constructs = ["arbitrary-commands", "whole-project-proof", "semantic-quality-proof", "sam3-availability-proof"]
+capabilities = ["ruff-format", "ruff-check", "unit-tests", "vision-unit-tests", "layer-decomposition-tests", "live-gimp", "live-subject-isolation", "live-vision-bridge", "live-layer-decomposition", "vision-provider-status", "semantic-inference", "semantic-quality-uncertainty", "pip-check"]
+supported_constructs = ["fixed-command-semantic-parsing", "live-gimp-availability", "live-subject-isolation-evidence", "layer-decomposition-evidence", "configured-provider-readiness", "actual-semantic-inference"]
+unsupported_constructs = ["arbitrary-commands", "whole-project-proof", "semantic-quality-proof-without-ground-truth", "sam3-availability-proof"]
 limitations = ["development evidence only; commands use the ambient project environment"]
 
 [[workflows]]
@@ -105,6 +105,96 @@ assumptions = ["the configured loopback Script-Fu endpoint is the GIMP under tes
 timeout_seconds = 120
 cost = "high"
 uncertainty_classes = ["live-dependency", "provider-availability"]
+
+[[verifiers]]
+id = "project.layer-decomposition-tests"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "layer-decomposition-tests"
+claim = "Complementary soft-mask algebra, bounded multi-concept layering, overlap reporting, naming, source preservation, selection behavior, and rollback tests completed without failures."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "tests"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["Deterministic fake-provider evidence does not establish real semantic quality."]
+assumptions = ["pytest output contains a decisive passing summary"]
+timeout_seconds = 60
+cost = "medium"
+uncertainty_classes = ["test-failure", "layer-decomposition"]
+
+[[verifiers]]
+id = "project.live-layer-decomposition"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "live-layer-decomposition"
+claim = "A disposable live GIMP document retained a generated group with complementary subject/background masks and an unchanged original source layer."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "integration"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["The deterministic fake provider establishes GIMP layering, not semantic quality."]
+assumptions = ["the configured loopback Script-Fu endpoint is the GIMP under test"]
+timeout_seconds = 120
+cost = "high"
+uncertainty_classes = ["live-dependency", "layer-decomposition"]
+
+[[verifiers]]
+id = "project.vision-provider-status"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "vision-provider-status"
+claim = "The configured local provider found its checkpoint, loaded its model, and passed a provider-side self-test."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["environment"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["Unavailable optional providers are UNKNOWN, never PASS; readiness is not mask quality."]
+assumptions = ["trusted provider configuration identifies the intended local worker"]
+timeout_seconds = 120
+cost = "high"
+uncertainty_classes = ["provider-availability", "model-readiness"]
+
+[[verifiers]]
+id = "project.semantic-inference"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "semantic-inference"
+claim = "The configured real local provider completed an actual bounded text-prompted segmentation inference."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["environment", "runtime"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["Successful inference does not establish usefulness or pixel accuracy."]
+assumptions = ["trusted provider configuration identifies the intended local worker"]
+timeout_seconds = 120
+cost = "high"
+uncertainty_classes = ["provider-availability", "semantic-inference"]
+
+[[verifiers]]
+id = "project.semantic-quality-uncertainty"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "semantic-quality-uncertainty"
+claim = "Semantic pixel accuracy remains unknown without ground truth."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["evidence"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["Provider confidence and mask proxies are not accuracy or IoU."]
+assumptions = []
+timeout_seconds = 5
+cost = "low"
+uncertainty_classes = ["segmentation-quality"]
 
 [[verifiers]]
 id = "project.ruff-format"

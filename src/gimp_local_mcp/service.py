@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import shutil
 import tempfile
 import time
 from collections.abc import Iterator
@@ -22,11 +23,21 @@ from .gimp.serializer import SchemeNull, SchemeSymbol, SchemeVector, scheme_call
 from .gimp.transport import ScriptFuClient
 from .models import ImageInfo, LayerInfo, LayerNode
 from .vision import VisionClient
-from .vision.artifacts import MaskArtifactError, validate_mask_png
-from .vision.models import SegmentationRequest, SegmentationResult
+from .vision.artifacts import (
+    MaskArtifactError,
+    complement_mask_png,
+    mask_overlap_statistics,
+    union_mask_png,
+    validate_mask_png,
+)
+from .vision.models import SegmentationCandidate, SegmentationRequest, SegmentationResult
 from .vision.refinement import IdentityMaskRefiner
 
 logger = logging.getLogger(__name__)
+
+_MAX_DECOMPOSITION_CONCEPTS = 8
+_MAX_INSTANCES_PER_CONCEPT = 8
+_MAX_GENERATED_VISION_LAYERS = 24
 
 
 def _scalar(value: Any) -> Any:
@@ -118,6 +129,8 @@ class GimpService:
                 "bounded high-key subject isolation",
                 "optional local semantic vision status and segmentation",
                 "non-destructive semantic subject isolation",
+                "persistent complementary subject/background layer decomposition",
+                "bounded multi-concept decomposition with overlap reporting",
             ],
             "limitations": [
                 "The Script-Fu server may not expose a default display; with one open image, "
@@ -772,10 +785,7 @@ class GimpService:
                 except Exception:
                     logger.exception("failed to close temporary vision image %s", duplicate_id)
             try:
-                for child in temporary_directory.iterdir():
-                    if child.is_file() or child.is_symlink():
-                        child.unlink()
-                temporary_directory.rmdir()
+                shutil.rmtree(temporary_directory)
             except OSError:
                 logger.exception(
                     "failed to clean temporary vision snapshot %s", temporary_directory
@@ -1105,6 +1115,380 @@ class GimpService:
                     except Exception:
                         logger.exception("failed to clean up semantic subject layer")
                 raise
+
+    @staticmethod
+    def _vision_layer_label(value: str) -> str:
+        return " ".join(value.strip().split())[:96]
+
+    def _segment_decomposition_concept(
+        self,
+        snapshot: Path,
+        output_directory: Path,
+        concept: str,
+        width: int,
+        height: int,
+        *,
+        max_candidates: int,
+        minimum_score: float,
+    ) -> SegmentationResult:
+        request = self._vision_request(
+            snapshot,
+            output_directory,
+            concept,
+            max_candidates=max_candidates,
+            minimum_score=minimum_score,
+            mode="instance",
+        )
+        return self._validate_vision_result(
+            self.vision.segment(request),
+            output_directory,
+            width,
+            height,
+            minimum_score,
+        )
+
+    @staticmethod
+    def _decomposition_candidate_summary(candidate: SegmentationCandidate) -> dict[str, Any]:
+        return {
+            "candidate_id": candidate.candidate_id,
+            "concept": candidate.concept,
+            "score": candidate.score,
+            "bounding_box": candidate.bounding_box.as_dict() if candidate.bounding_box else None,
+            "metadata": dict(candidate.metadata),
+        }
+
+    def separate_subject_to_layers(
+        self,
+        image_id: int,
+        layer_id: int,
+        prompt: str,
+        *,
+        include_background: bool = True,
+        create_group: bool = True,
+        preserve_original: bool = True,
+        minimum_score: float = 0.0,
+    ) -> dict[str, Any]:
+        """Leave one prompted subject and its exact-complement background as GIMP layers."""
+
+        result = self._separate_concepts_to_layers(
+            image_id,
+            layer_id,
+            [prompt],
+            include_background=include_background,
+            create_group=create_group,
+            preserve_original=preserve_original,
+            instance_mode="merge",
+            overlap_policy="report",
+            max_instances_per_concept=1,
+            minimum_score=minimum_score,
+            subject_style=True,
+        )
+        result["operation"] = "separate_subject_to_layers"
+        result["prompt"] = prompt.strip()
+        return result
+
+    def separate_concepts_to_layers(
+        self,
+        image_id: int,
+        layer_id: int,
+        concepts: list[str],
+        *,
+        include_background: bool = True,
+        create_group: bool = True,
+        preserve_original: bool = True,
+        instance_mode: str = "separate",
+        overlap_policy: str = "report",
+        max_instances_per_concept: int = 4,
+        minimum_score: float = 0.0,
+    ) -> dict[str, Any]:
+        """Create bounded concept/instance layers and a remainder from semantic masks."""
+
+        return self._separate_concepts_to_layers(
+            image_id,
+            layer_id,
+            concepts,
+            include_background=include_background,
+            create_group=create_group,
+            preserve_original=preserve_original,
+            instance_mode=instance_mode,
+            overlap_policy=overlap_policy,
+            max_instances_per_concept=max_instances_per_concept,
+            minimum_score=minimum_score,
+            subject_style=False,
+        )
+
+    def _separate_concepts_to_layers(
+        self,
+        image_id: int,
+        layer_id: int,
+        concepts: list[str],
+        *,
+        include_background: bool,
+        create_group: bool,
+        preserve_original: bool,
+        instance_mode: str,
+        overlap_policy: str,
+        max_instances_per_concept: int,
+        minimum_score: float,
+        subject_style: bool,
+    ) -> dict[str, Any]:
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
+        if not isinstance(concepts, list) or not 1 <= len(concepts) <= _MAX_DECOMPOSITION_CONCEPTS:
+            raise ValueError(f"concepts must contain 1 to {_MAX_DECOMPOSITION_CONCEPTS} strings")
+        normalized = [
+            self._vision_layer_label(value) if isinstance(value, str) else "" for value in concepts
+        ]
+        if any(not value for value in normalized):
+            raise ValueError("each concept must be a non-empty string")
+        if len({value.casefold() for value in normalized}) != len(normalized):
+            raise ValueError("concepts cannot contain duplicates")
+        if instance_mode not in {"separate", "merge"}:
+            raise ValueError("instance_mode must be separate or merge")
+        if overlap_policy != "report":
+            raise ValueError("overlap_policy currently supports only report")
+        if not isinstance(include_background, bool) or not isinstance(create_group, bool):
+            raise ValueError("include_background and create_group must be boolean")
+        if preserve_original is not True:
+            raise ValueError(
+                "preserve_original=false is not supported; the source must remain intact"
+            )
+        if (
+            not isinstance(max_instances_per_concept, int)
+            or isinstance(max_instances_per_concept, bool)
+            or not 1 <= max_instances_per_concept <= _MAX_INSTANCES_PER_CONCEPT
+        ):
+            raise ValueError(
+                f"max_instances_per_concept must be between 1 and {_MAX_INSTANCES_PER_CONCEPT}"
+            )
+        maximum_layers = len(normalized) * (
+            max_instances_per_concept if instance_mode == "separate" else 1
+        ) + int(include_background)
+        if maximum_layers > _MAX_GENERATED_VISION_LAYERS:
+            raise ValueError(
+                f"requested decomposition can create at most {_MAX_GENERATED_VISION_LAYERS} layers"
+            )
+        source = self.get_layer_info(image_id, layer_id)
+        source_mask = self.masks.get(layer_id)
+        if source_mask.has_mask:
+            raise ValueError("source layer already has a mask; choose an unmasked source layer")
+        if self._selection_snapshot(image_id)["active"]:
+            raise ValueError("layer decomposition refuses to replace an existing image selection")
+        source_visibility = source.get("visible")
+        selected_before = [item["layer_id"] for item in self.get_selected_layers(image_id)]
+        started = time.perf_counter()
+        generated_layer_ids: list[int] = []
+        generated: list[dict[str, Any]] = []
+        group_id: int | None = None
+        source_hidden = False
+        with self._vision_snapshot(image_id) as (snapshot, temporary_directory):
+            mask_specs: list[dict[str, Any]] = []
+            provider_results: list[SegmentationResult] = []
+            for concept_index, concept in enumerate(normalized):
+                concept_directory = temporary_directory / f"concept-{concept_index}"
+                concept_directory.mkdir()
+                result = self._segment_decomposition_concept(
+                    snapshot,
+                    concept_directory,
+                    concept,
+                    source["width"],
+                    source["height"],
+                    max_candidates=max_instances_per_concept,
+                    minimum_score=minimum_score,
+                )
+                provider_results.append(result)
+                candidates = sorted(
+                    result.candidates,
+                    key=lambda item: item.score if item.score is not None else -1.0,
+                    reverse=True,
+                )[:max_instances_per_concept]
+                if instance_mode == "merge" and len(candidates) > 1:
+                    merged_path = concept_directory / "merged.png"
+                    union_mask_png([item.mask.path for item in candidates], merged_path)
+                    mask_specs.append(
+                        {
+                            "concept": concept,
+                            "name": concept,
+                            "path": merged_path,
+                            "candidates": [
+                                self._decomposition_candidate_summary(item) for item in candidates
+                            ],
+                        }
+                    )
+                else:
+                    for instance_index, candidate in enumerate(candidates, start=1):
+                        suffix = f" {instance_index}" if len(candidates) > 1 else ""
+                        mask_specs.append(
+                            {
+                                "concept": concept,
+                                "name": f"{concept}{suffix}",
+                                "path": candidate.mask.path,
+                                "candidates": [self._decomposition_candidate_summary(candidate)],
+                            }
+                        )
+            if not mask_specs:
+                raise RuntimeError("vision provider returned no usable decomposition masks")
+            if len(mask_specs) + int(include_background) > _MAX_GENERATED_VISION_LAYERS:
+                raise RuntimeError("provider results exceed the generated-layer safety bound")
+            foreground_paths = [spec["path"] for spec in mask_specs]
+            overlap = mask_overlap_statistics(foreground_paths)
+            union_path = temporary_directory / "foreground-union.png"
+            union_mask_png(foreground_paths, union_path)
+            background_path = temporary_directory / "background-complement.png"
+            if include_background:
+                complement_mask_png(union_path, background_path)
+            for spec in mask_specs:
+                quality = self._local_mask_quality(spec["path"], source["width"], source["height"])
+                if quality["all_transparent"] or quality["all_opaque"]:
+                    raise RuntimeError(
+                        f"semantic vision produced a pathological mask for {spec['concept']}"
+                    )
+                spec["quality"] = quality
+            try:
+                if create_group:
+                    group_name = (
+                        f"MCP Vision — {normalized[0]}"
+                        if subject_style
+                        else "MCP Vision Decomposition"
+                    )
+                    group_id = self.create_layer_group(image_id, group_name)["layer_id"]
+                for position, spec in enumerate(mask_specs):
+                    duplicate = self.duplicate_layer(image_id, layer_id)
+                    generated_id = duplicate["layer_id"]
+                    generated_layer_ids.append(generated_id)
+                    layer_name = f"Subject — {spec['name']}" if subject_style else spec["name"]
+                    self.rename_layer(generated_id, layer_name)
+                    if group_id is not None:
+                        self.move_layer(image_id, generated_id, position, group_id)
+                    mask = self._apply_vision_mask(
+                        image_id,
+                        generated_id,
+                        spec["path"],
+                        source["width"],
+                        source["height"],
+                        temporary_directory,
+                    )
+                    generated.append(
+                        {
+                            "role": "subject" if subject_style else "concept",
+                            "concept": spec["concept"],
+                            "layer_id": generated_id,
+                            "name": layer_name,
+                            "mask_id": mask["mask_id"],
+                            "quality": spec["quality"],
+                            "candidates": spec["candidates"],
+                        }
+                    )
+                if include_background:
+                    background = self.duplicate_layer(image_id, layer_id)
+                    background_id = background["layer_id"]
+                    generated_layer_ids.append(background_id)
+                    background_name = "Background" if subject_style else "Remainder Background"
+                    self.rename_layer(background_id, background_name)
+                    if group_id is not None:
+                        self.move_layer(image_id, background_id, len(mask_specs), group_id)
+                    background_mask = self._apply_vision_mask(
+                        image_id,
+                        background_id,
+                        background_path,
+                        source["width"],
+                        source["height"],
+                        temporary_directory,
+                    )
+                    generated.append(
+                        {
+                            "role": "background",
+                            "concept": None,
+                            "layer_id": background_id,
+                            "name": background_name,
+                            "mask_id": background_mask["mask_id"],
+                            "quality": self._local_mask_quality(
+                                background_path, source["width"], source["height"]
+                            ),
+                            "mask_relationship": "exact 8-bit complement of foreground union",
+                        }
+                    )
+                if source_visibility is True:
+                    self.set_layer_visibility(layer_id, False)
+                    source_hidden = True
+                foreground_layer_ids = [
+                    item["layer_id"] for item in generated if item["role"] != "background"
+                ]
+                self.set_selected_layers(image_id, foreground_layer_ids)
+            except Exception:
+                for generated_id in reversed(generated_layer_ids):
+                    try:
+                        self.delete_layer(image_id, generated_id)
+                    except Exception:
+                        logger.exception(
+                            "failed to roll back generated vision layer %s", generated_id
+                        )
+                if group_id is not None:
+                    try:
+                        self.delete_layer(image_id, group_id)
+                    except Exception:
+                        logger.exception("failed to roll back generated vision group %s", group_id)
+                if source_hidden:
+                    try:
+                        self.set_layer_visibility(layer_id, bool(source_visibility))
+                    except Exception:
+                        logger.exception("failed to restore source-layer visibility")
+                if selected_before:
+                    try:
+                        self.set_selected_layers(image_id, selected_before)
+                    except Exception:
+                        logger.exception("failed to restore selected layers")
+                raise
+            providers = [
+                {
+                    "concept": concept,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "runtime_seconds": result.runtime_seconds,
+                    "warnings": list(result.warnings),
+                    "provenance": dict(result.provenance),
+                }
+                for concept, result in zip(normalized, provider_results, strict=True)
+            ]
+            return {
+                "status": "completed",
+                "operation": "separate_concepts_to_layers",
+                "image_id": image_id,
+                "source_layer_id": layer_id,
+                "source_preserved": True,
+                "source_mask_before": source_mask.as_dict(),
+                "source_visibility_before": source_visibility,
+                "source_visibility_after": False
+                if source_visibility is True
+                else source_visibility,
+                "source_visibility_changed": source_hidden,
+                "group_id": group_id,
+                "create_group": create_group,
+                "include_background": include_background,
+                "instance_mode": instance_mode,
+                "overlap_policy": overlap_policy,
+                "overlap": overlap,
+                "background_basis": "exact complement of the soft-alpha foreground union"
+                if include_background
+                else None,
+                "generated_layers": generated,
+                "generated_layer_count": len(generated),
+                "selected_layer_ids": [
+                    item["layer_id"] for item in generated if item["role"] != "background"
+                ],
+                "providers": providers,
+                "runtime_seconds": round(time.perf_counter() - started, 3),
+                "quality_is_proxy": True,
+                "limitations": [
+                    "Provider scores and activation values are not segmentation accuracy.",
+                    "Independently prompted masks may overlap; report mode does not assign "
+                    "ownership.",
+                    "Semantic probability masks are not learned alpha mattes.",
+                    "GIMP may expose partial mask samples in image-space encoding even when the "
+                    "provider artifacts are exact complements.",
+                ],
+            }
 
     def isolate_subject(
         self,

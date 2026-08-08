@@ -37,6 +37,7 @@ class Config:
     vision_provider: str = "none"
     vision_command: tuple[str, ...] | None = None
     vision_timeout: float = 60.0
+    vision_device: str = "auto"
 
     @classmethod
     def from_env(cls) -> Config:
@@ -88,6 +89,9 @@ class Config:
             raise ConfigurationError(
                 f"GIMP_MCP_LOG_LEVEL is not a valid logging level: {log_level}"
             )
+        vision_device = os.getenv("GIMP_MCP_VISION_DEVICE", "auto").strip().lower()
+        if vision_device not in {"auto", "cpu", "cuda"}:
+            raise ConfigurationError("GIMP_MCP_VISION_DEVICE must be auto, cpu, or cuda")
         return cls(
             host=os.getenv("GIMP_MCP_HOST", "127.0.0.1"),
             port=integer("GIMP_MCP_PORT", 10008, 1, 65_535),
@@ -98,6 +102,7 @@ class Config:
             vision_provider=vision_provider,
             vision_command=vision_command,
             vision_timeout=positive_float("GIMP_MCP_VISION_TIMEOUT", 60.0),
+            vision_device=vision_device,
         )
 
     def validate(self) -> None:
@@ -129,6 +134,8 @@ class Config:
             raise ConfigurationError("Vision provider name contains unsupported characters")
         if not math.isfinite(self.vision_timeout) or not 0 < self.vision_timeout <= 600:
             raise ConfigurationError("Vision worker timeout must be between zero and 600 seconds")
+        if self.vision_device not in {"auto", "cpu", "cuda"}:
+            raise ConfigurationError("Vision device must be auto, cpu, or cuda")
         if self.vision_provider == "none" and self.vision_command is not None:
             raise ConfigurationError(
                 "GIMP_MCP_VISION_COMMAND requires a configured vision provider"

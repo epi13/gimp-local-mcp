@@ -14,6 +14,9 @@ GIMP Local MCP is intentionally powerful local automation. Treat the MCP host an
   mask artifacts must be lossless PNGs in a service-owned temporary directory.
 - Vision snapshots duplicate the requested GIMP image and save only the duplicate. Normal MCP
   operation never downloads model weights and never sends user pixels to hosted inference.
+- The CLIPSeg worker loads only locally cached checkpoints during normal JSONL operation. Its
+  `--download-model` mode is an explicit operator setup action and is not reachable from MCP tool
+  arguments. Device and model identifiers remain trusted environment configuration.
 - The structured PDB gateway validates procedure identifiers and serializes values. User strings cannot become Scheme syntax.
 - Request and response bodies are bounded by the Script-Fu protocol’s 16-bit length and the configured response limit.
 
@@ -27,10 +30,11 @@ GIMP’s Script-Fu server has no authentication in this bridge. A process that c
 
 The MCP host can request destructive image operations through the intended tools. Review client permissions and prompts accordingly.
 
-SAM 3, CUDA, model checkpoints, and any separately installed adapter remain operator-managed
-dependencies. Review upstream licenses, local filesystem permissions, checkpoint provenance, and
-process isolation. A provider's confidence is not proof of segmentation quality; this project does
-not claim a ground-truth result for the fox benchmark.
+CLIPSeg, SAM 3, CUDA, model checkpoints, and separately installed adapters remain operator-managed
+dependencies outside the core package. Review upstream licenses, checkpoint provenance, cache and
+environment permissions, and process isolation. A provider OOM is a typed failure and decomposition
+validates all masks before document mutation. Provider confidence or activation is not proof of
+segmentation quality; this project does not claim a ground-truth result for the fox benchmark.
 
 ## Reporting issues
 

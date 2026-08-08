@@ -24,7 +24,10 @@ def test_server_uses_official_mcp_server_and_registers_tools() -> None:
         "vision_status",
         "segment_subject",
         "isolate_subject_vision",
+        "separate_subject_to_layers",
+        "separate_concepts_to_layers",
         "isolate_subject",
     }.issubset(tools)
     assert "execute_scheme" not in tools
     assert "never overwrite files" in server.INSTRUCTIONS
+    assert "separate_subject_to_layers" in server.INSTRUCTIONS

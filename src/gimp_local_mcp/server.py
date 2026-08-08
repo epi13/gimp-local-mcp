@@ -17,9 +17,12 @@ Start uncertain editing workflows with get_current_context, then inspect the rec
 tree and selected-layer IDs before targeting a drawable. Prefer ergonomic tools for routine edits,
 and use structured PDB discovery/invocation for unsupported operations. Use identifiers
 returned by this server. Preserve user work and never overwrite files without explicit
-permission. Subject isolation duplicates its explicit source layer and applies a bounded layer
-mask. Configured local vision workers support semantic prompts such as “red fox”; otherwise auto
-mode uses the bounded high-key fallback. Neither mode claims semantic segmentation accuracy.
+permission. For “remove the background” or “put the fox on its own layer,” prefer
+separate_subject_to_layers when semantic vision is available; it leaves complementary Subject and
+Background layers in a group and preserves the hidden original. For “separate the subjects into
+layers,” use separate_concepts_to_layers with explicit concepts and conservative overlap reporting.
+Inspection-only segmentation remains non-mutating. If semantic vision is unavailable, auto subject
+isolation can use the bounded high-key fallback. No provider score is segmentation accuracy.
 GIMP and vision inference remain local; this server does not generate replacement pixels or send
 images to cloud services."""
 
@@ -376,6 +379,58 @@ def isolate_subject_vision(
         max_candidates=max_candidates,
         minimum_score=minimum_score,
         mode=mode,
+    )
+
+
+@mcp.tool()
+def separate_subject_to_layers(
+    image_id: int,
+    layer_id: int,
+    prompt: str,
+    include_background: bool = True,
+    create_group: bool = True,
+    preserve_original: bool = True,
+    minimum_score: float = 0.0,
+) -> dict[str, Any]:
+    """Persist a prompted subject, exact-complement background, and preserved original."""
+
+    return _service.separate_subject_to_layers(
+        image_id,
+        layer_id,
+        prompt,
+        include_background=include_background,
+        create_group=create_group,
+        preserve_original=preserve_original,
+        minimum_score=minimum_score,
+    )
+
+
+@mcp.tool()
+def separate_concepts_to_layers(
+    image_id: int,
+    layer_id: int,
+    concepts: list[str],
+    include_background: bool = True,
+    create_group: bool = True,
+    preserve_original: bool = True,
+    instance_mode: str = "separate",
+    overlap_policy: str = "report",
+    max_instances_per_concept: int = 4,
+    minimum_score: float = 0.0,
+) -> dict[str, Any]:
+    """Persist bounded semantic concept/instance layers and a complementary remainder."""
+
+    return _service.separate_concepts_to_layers(
+        image_id,
+        layer_id,
+        concepts,
+        include_background=include_background,
+        create_group=create_group,
+        preserve_original=preserve_original,
+        instance_mode=instance_mode,
+        overlap_policy=overlap_policy,
+        max_instances_per_concept=max_instances_per_concept,
+        minimum_score=minimum_score,
     )
 
 
