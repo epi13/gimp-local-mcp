@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added a reusable structured layer-mask gateway with safe mask inspection, creation, attachment,
+  and enable/disable controls. Added bounded non-destructive `isolate_subject` support using a
+  border-seeded high-key contiguous-color fallback, baseline/refined mask proxy metrics, and
+  deterministic live synthetic-mask coverage. Native foreground extraction was probed on GIMP
+  3.2.0 and is documented as unavailable through this Script-Fu bridge.
+- Hardened `export_image` to refuse the unsafe `gimp-file-save` fallback when the tested GIMP
+  Script-Fu bridge lacks a dedicated export binding.
 - Added a bounded current-document context snapshot, recursive layer/group trees, GIMP 3
   multi-layer selection inspection/control, parent/image ownership checks, and reusable group-layer
   creation. Live tests preserve the pre-existing user image and use a separate temporary image for

@@ -18,6 +18,10 @@ def test_server_uses_official_mcp_server_and_registers_tools() -> None:
         "apply_gaussian_blur_filter",
         "apply_brightness_contrast_filter",
         "list_drawable_filters",
+        "get_layer_mask_info",
+        "create_layer_mask",
+        "set_layer_mask_enabled",
+        "isolate_subject",
     }.issubset(tools)
     assert "execute_scheme" not in tools
     assert "never overwrite files" in server.INSTRUCTIONS

@@ -46,6 +46,10 @@ def test_forge_provider_parses_successful_fixed_checks() -> None:
 def test_forge_provider_distinguishes_live_skip_from_pass() -> None:
     result = _check_result("live-gimp", (0, "1 skipped in 0.1s\n", ""), request("live-gimp"))
     assert result["status"] == "UNKNOWN"
+    result = _check_result(
+        "live-subject-isolation", (0, "1 passed in 0.1s\n", ""), request("live-subject-isolation")
+    )
+    assert result["status"] == "PASS"
 
 
 def test_forge_provider_reports_failures_and_rejects_unbounded_methods() -> None:

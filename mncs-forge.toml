@@ -55,8 +55,8 @@ version = "0.1"
 command = ["python", "tools/forge_provider.py"]
 transport = "stdio-jsonl"
 required = true
-capabilities = ["ruff-format", "ruff-check", "unit-tests", "live-gimp", "pip-check"]
-supported_constructs = ["fixed-command-semantic-parsing", "live-gimp-availability"]
+capabilities = ["ruff-format", "ruff-check", "unit-tests", "live-gimp", "live-subject-isolation", "pip-check"]
+supported_constructs = ["fixed-command-semantic-parsing", "live-gimp-availability", "live-subject-isolation-evidence"]
 unsupported_constructs = ["arbitrary-commands", "whole-project-proof"]
 limitations = ["development evidence only; commands use the ambient project environment"]
 
@@ -141,6 +141,24 @@ assumptions = ["the configured loopback Script-Fu endpoint is the GIMP under tes
 timeout_seconds = 120
 cost = "high"
 uncertainty_classes = ["live-dependency"]
+
+[[verifiers]]
+id = "project.live-subject-isolation"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "live-subject-isolation"
+claim = "The live GIMP mask foundation completed a deterministic synthetic non-destructive mask workflow and emitted bounded quality metrics."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "integration"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["This verifies deterministic live mask behavior, not semantic subject segmentation quality."]
+assumptions = ["the configured loopback Script-Fu endpoint is the GIMP under test"]
+timeout_seconds = 120
+cost = "high"
+uncertainty_classes = ["live-dependency", "segmentation-quality"]
 
 [[verifiers]]
 id = "project.pip-check"

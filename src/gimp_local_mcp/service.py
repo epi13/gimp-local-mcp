@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import math
+import time
 from pathlib import Path
 from typing import Any
 
 from .config import Config
 from .errors import PathPolicyError, ScriptFuError, UnsafeOperationError
 from .gimp.filters import DrawableFilterGateway, DrawableFilterSpec
+from .gimp.masks import LayerMaskGateway
+from .gimp.metrics import mask_metrics
 from .gimp.pdb import PdbCatalog, PdbInvoker
 from .gimp.scheme import parse_scheme, unwrap
 from .gimp.serializer import SchemeNull, SchemeSymbol, SchemeVector, scheme_call, with_v3
@@ -51,6 +55,7 @@ class GimpService:
         self.catalog = PdbCatalog(self.client)
         self.pdb = PdbInvoker(self.client, self.catalog)
         self.filters = DrawableFilterGateway(self.evaluate)
+        self.masks = LayerMaskGateway(self.evaluate)
 
     def close(self) -> None:
         self.client.close()
@@ -94,6 +99,8 @@ class GimpService:
                 "recursive layer trees",
                 "multi-layer selection inspection",
                 "multi-layer selection control",
+                "reusable layer masks",
+                "bounded high-key subject isolation",
             ],
             "limitations": [
                 "The Script-Fu server may not expose a default display; with one open image, "
@@ -101,6 +108,9 @@ class GimpService:
                 "The default Script-Fu adapter reports argument GParamSpec metadata as "
                 "unavailable; no signatures are guessed.",
                 "Export metadata options are left to GIMP's configured defaults in v0.1.",
+                "Foreground extraction is unavailable through the tested Script-Fu bridge;\n"
+                "subject isolation uses a border-seeded contiguous-color fallback with\n"
+                "observable matte proxies rather than semantic accuracy.",
             ],
         }
 
@@ -215,7 +225,7 @@ class GimpService:
         target = self._output_file(path, overwrite)
         if not target.suffix:
             raise PathPolicyError("export_image paths must include a format extension")
-        self._save(image_id, target)
+        self._export(image_id, target)
         return {
             "image_id": image_id,
             "path": str(target),
@@ -581,12 +591,296 @@ class GimpService:
         }
 
     def select_layer_alpha(self, image_id: int, layer_id: int) -> dict[str, Any]:
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
         self.evaluate(
             scheme_call(
                 "gimp-image-select-item", [image_id, SchemeSymbol("CHANNEL-OP-REPLACE"), layer_id]
             )
         )
         return {"image_id": image_id, "layer_id": layer_id, "selection": "layer-alpha"}
+
+    def get_layer_mask_info(self, image_id: int, layer_id: int) -> dict[str, Any]:
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
+        return self.masks.get(layer_id).as_dict()
+
+    def create_layer_mask(
+        self,
+        image_id: int,
+        layer_id: int,
+        mask_type: str = "selection",
+    ) -> dict[str, Any]:
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
+        return self.masks.create_and_attach(layer_id, mask_type).as_dict()
+
+    def set_layer_mask_enabled(self, image_id: int, layer_id: int, enabled: bool) -> dict[str, Any]:
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
+        return self.masks.set_enabled(layer_id, enabled).as_dict()
+
+    def _selection_snapshot(self, image_id: int) -> dict[str, Any]:
+        values = unwrap(self.evaluate(scheme_call("gimp-selection-bounds", [image_id])))
+        if not isinstance(values, list) or len(values) < 5 or not isinstance(values[0], bool):
+            raise RuntimeError(f"GIMP returned malformed selection bounds: {values!r}")
+        return {
+            "active": values[0],
+            "x": values[1] if isinstance(values[1], int) else None,
+            "y": values[2] if isinstance(values[2], int) else None,
+            "width": values[3] if isinstance(values[3], int) else None,
+            "height": values[4] if isinstance(values[4], int) else None,
+        }
+
+    @staticmethod
+    def _border_points(width: int, height: int) -> list[tuple[int, int]]:
+        fractions = (0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95)
+        points = [(round((width - 1) * fraction), 0) for fraction in fractions]
+        points += [(round((width - 1) * fraction), height - 1) for fraction in fractions]
+        points += [(0, round((height - 1) * fraction)) for fraction in fractions]
+        points += [(width - 1, round((height - 1) * fraction)) for fraction in fractions]
+        return list(dict.fromkeys(points))
+
+    def _sample_pixel(self, drawable_id: int, x: int, y: int) -> list[int]:
+        value = unwrap(self.evaluate(scheme_call("gimp-drawable-get-pixel", [drawable_id, x, y])))
+        if not isinstance(value, list) or not 1 <= len(value) <= 4:
+            raise RuntimeError(f"GIMP returned malformed pixel at {x},{y}: {value!r}")
+        pixel: list[int] = []
+        for channel in value:
+            if not isinstance(channel, (int, float)) or isinstance(channel, bool):
+                raise RuntimeError(f"GIMP returned malformed pixel channel: {value!r}")
+            if not 0 <= float(channel) <= 255 or not math.isfinite(float(channel)):
+                raise RuntimeError(f"GIMP returned out-of-range pixel channel: {value!r}")
+            pixel.append(int(round(float(channel))))
+        return pixel
+
+    def _border_characteristics(self, layer_id: int, width: int, height: int) -> dict[str, Any]:
+        samples = []
+        for x, y in self._border_points(width, height):
+            pixel = self._sample_pixel(layer_id, x, y)
+            luminance = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]
+            samples.append({"x": x, "y": y, "rgb": pixel[:3], "luminance": luminance})
+        luminances = [item["luminance"] for item in samples]
+        high_key = [value for value in luminances if value >= 170]
+        mean = sum(luminances) / len(luminances) if luminances else 0.0
+        spread = max(luminances) - min(luminances) if luminances else 0.0
+        return {
+            "sample_count": len(samples),
+            "high_key_sample_count": len(high_key),
+            "high_key_ratio": len(high_key) / len(samples) if samples else 0.0,
+            "mean_luminance": round(mean, 3),
+            "luminance_spread": round(spread, 3),
+            "samples": samples[:32],
+        }
+
+    def _select_border_background(
+        self,
+        image_id: int,
+        layer_id: int,
+        width: int,
+        height: int,
+        *,
+        threshold: int,
+        feather: int,
+        minimum_luminance: float | None = 170,
+    ) -> dict[str, Any]:
+        self.evaluate(scheme_call("gimp-selection-none", [image_id]))
+        self.evaluate(scheme_call("gimp-context-set-sample-threshold-int", [threshold]))
+        selected_points = []
+        for x, y in self._border_points(width, height):
+            pixel = self._sample_pixel(layer_id, x, y)
+            luminance = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]
+            if minimum_luminance is not None and luminance < minimum_luminance:
+                continue
+            selected_points.append((x, y))
+            operation = "CHANNEL-OP-REPLACE" if len(selected_points) == 1 else "CHANNEL-OP-ADD"
+            self.evaluate(
+                scheme_call(
+                    "gimp-image-select-contiguous-color",
+                    [image_id, SchemeSymbol(operation), layer_id, x, y],
+                )
+            )
+        if not selected_points:
+            raise RuntimeError("no sufficiently light perimeter samples were available")
+        if feather:
+            self.evaluate(scheme_call("gimp-selection-feather", [image_id, feather]))
+        self.evaluate(scheme_call("gimp-selection-invert", [image_id]))
+        return {
+            "selected_border_points": len(selected_points),
+            "threshold": threshold,
+            "feather": feather,
+            "minimum_luminance": minimum_luminance,
+        }
+
+    def _sample_mask(
+        self, mask_id: int, width: int, height: int, *, max_axis_samples: int = 16
+    ) -> list[tuple[int, int, int]]:
+        step = max(1, math.ceil(max(width, height) / max_axis_samples))
+        xs = sorted(set(range(0, width, step)) | {width - 1})
+        ys = sorted(set(range(0, height, step)) | {height - 1})
+        samples: list[tuple[int, int, int]] = []
+        for y in ys:
+            for x in xs:
+                pixel = self._sample_pixel(mask_id, x, y)
+                if len(pixel) != 1:
+                    raise RuntimeError(f"GIMP returned non-grayscale mask pixel: {pixel!r}")
+                samples.append((x, y, self.masks.validate_alpha(pixel[0])))
+        return samples
+
+    def isolate_subject(
+        self,
+        image_id: int,
+        layer_id: int,
+        strategy: str = "auto",
+        background_threshold: int = 48,
+        refinement_threshold: int = 24,
+        feather: int = 1,
+    ) -> dict[str, Any]:
+        """Duplicate a layer and create a bounded, non-destructive subject mask.
+
+        The current strategy is deliberately limited to high-key backgrounds. It seeds
+        contiguous-color selection from sufficiently light perimeter pixels, then converts
+        the inverted selection into a layer mask. The refined pass uses a lower threshold
+        and modest feathering to keep uncertain fur transitions instead of hard-binarizing.
+        """
+
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
+        if strategy not in {"auto", "high-key-background", "border-color"}:
+            raise ValueError("strategy must be auto, high-key-background, or border-color")
+        for value, name in (
+            (background_threshold, "background_threshold"),
+            (refinement_threshold, "refinement_threshold"),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 255:
+                raise ValueError(f"{name} must be an integer from 1 to 255")
+        if refinement_threshold > background_threshold:
+            raise ValueError("refinement_threshold cannot exceed background_threshold")
+        if not isinstance(feather, int) or isinstance(feather, bool) or not 0 <= feather <= 3:
+            raise ValueError("feather must be an integer from 0 to 3")
+        source = self.get_layer_info(image_id, layer_id)
+        existing_mask = self.masks.get(layer_id)
+        if existing_mask.has_mask:
+            raise ValueError("source layer already has a mask; choose an unmasked source layer")
+        selection_before = self._selection_snapshot(image_id)
+        if selection_before["active"]:
+            raise ValueError("isolate_subject refuses to replace an existing image selection")
+        old_threshold = _scalar(self.evaluate(scheme_call("gimp-context-get-sample-threshold-int")))
+        if not isinstance(old_threshold, int):
+            raise RuntimeError(f"GIMP returned malformed sample threshold: {old_threshold!r}")
+        border = self._border_characteristics(layer_id, source["width"], source["height"])
+        use_all_border = border["high_key_ratio"] >= 0.6
+        border["selection_policy"] = (
+            "all-perimeter-samples" if use_all_border else "high-key-perimeter-samples"
+        )
+        started = time.perf_counter()
+        baseline_layer_id: int | None = None
+        final_layer_id: int | None = None
+        final_mask_id: int | None = None
+        source_visibility = source.get("visible")
+        try:
+            baseline = self.duplicate_layer(image_id, layer_id)
+            baseline_layer_id = baseline["layer_id"]
+            self.rename_layer(baseline_layer_id, "MCP Subject Isolation (baseline)")
+            self._select_border_background(
+                image_id,
+                baseline_layer_id,
+                source["width"],
+                source["height"],
+                threshold=background_threshold,
+                feather=0,
+                minimum_luminance=None if use_all_border else 170,
+            )
+            baseline_mask = self.masks.create_and_attach(baseline_layer_id, "selection")
+            if baseline_mask.mask_id is None:
+                raise RuntimeError("baseline mask was not assigned an identity")
+            baseline_samples = self._sample_mask(
+                baseline_mask.mask_id, source["width"], source["height"]
+            )
+            baseline_quality = mask_metrics(baseline_samples, source["width"], source["height"])
+            self.delete_layer(image_id, baseline_layer_id)
+            baseline_layer_id = None
+
+            final = self.duplicate_layer(image_id, layer_id)
+            final_layer_id = final["layer_id"]
+            self.rename_layer(final_layer_id, "MCP Subject Isolation")
+            self._select_border_background(
+                image_id,
+                final_layer_id,
+                source["width"],
+                source["height"],
+                threshold=refinement_threshold,
+                feather=feather,
+                minimum_luminance=None if use_all_border else 170,
+            )
+            final_mask = self.masks.create_and_attach(final_layer_id, "selection")
+            final_mask_id = final_mask.mask_id
+            if final_mask_id is None:
+                raise RuntimeError("final mask was not assigned an identity")
+            final_samples = self._sample_mask(final_mask_id, source["width"], source["height"])
+            final_quality = mask_metrics(
+                final_samples,
+                source["width"],
+                source["height"],
+                foreground_reference=[alpha for _, _, alpha in baseline_samples],
+            )
+            if final_quality["all_transparent"] or final_quality["all_opaque"]:
+                raise RuntimeError(
+                    "subject isolation produced a pathological all-transparent or all-opaque mask"
+                )
+            if source_visibility is True:
+                self.set_layer_visibility(layer_id, False)
+            self.set_selected_layers(image_id, [final_layer_id])
+            return {
+                "status": "completed",
+                "image_id": image_id,
+                "source_layer_id": layer_id,
+                "working_layer_id": final_layer_id,
+                "mask_id": final_mask_id,
+                "strategy": "high-key-border-contiguous-color",
+                "parameters": {
+                    "background_threshold": background_threshold,
+                    "refinement_threshold": refinement_threshold,
+                    "feather": feather,
+                },
+                "border_evidence": border,
+                "baseline": baseline_quality,
+                "final": final_quality,
+                "quality_is_proxy": True,
+                "runtime_seconds": round(time.perf_counter() - started, 3),
+                "source_preserved": True,
+                "source_visibility_before": source_visibility,
+                "source_visibility_after": False
+                if source_visibility is True
+                else source_visibility,
+                "limitations": [
+                    "Native foreground extraction was unavailable through Script-Fu on GIMP 3.2.0.",
+                    "Metrics are bounded mask observables, not ground-truth segmentation accuracy.",
+                    "Border-seeded high-key isolation is not suitable for every background.",
+                ],
+            }
+        except Exception:
+            if final_layer_id is not None:
+                try:
+                    self.delete_layer(image_id, final_layer_id)
+                except Exception:
+                    logger.exception("failed to clean up subject-isolation working layer")
+            raise
+        finally:
+            if baseline_layer_id is not None:
+                try:
+                    self.delete_layer(image_id, baseline_layer_id)
+                except Exception:
+                    logger.exception("failed to clean up subject-isolation baseline layer")
+            try:
+                self.evaluate(scheme_call("gimp-selection-none", [image_id]))
+            finally:
+                self.evaluate(scheme_call("gimp-context-set-sample-threshold-int", [old_threshold]))
 
     def brightness_contrast(
         self, layer_id: int, brightness: float, contrast: float
@@ -680,6 +974,13 @@ class GimpService:
                 "gimp-file-save",
                 [SchemeSymbol("RUN-NONINTERACTIVE"), image_id, str(path), SchemeNull()],
             )
+        )
+
+    def _export(self, image_id: int, path: Path) -> None:
+        self._id(image_id, "image_id")
+        raise ScriptFuError(
+            "GIMP 3 Script-Fu does not expose a safe gimp-file-export binding in this "
+            "environment; refusing to route export through gimp-file-save"
         )
 
     def _run_undo_group(self, image_id: int, operation: str) -> Any:

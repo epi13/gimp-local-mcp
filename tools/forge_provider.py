@@ -17,13 +17,29 @@ PROVIDER = {
     "identity": "gimp-local-mcp-project-checks-v1",
     "version": "0.1",
 }
-METHODS = ["ruff-format", "ruff-check", "unit-tests", "live-gimp", "pip-check"]
+METHODS = [
+    "ruff-format",
+    "ruff-check",
+    "unit-tests",
+    "live-gimp",
+    "live-subject-isolation",
+    "pip-check",
+]
 _MAX_OUTPUT = 65536
 _COMMANDS = {
-    "ruff-format": ["ruff", "format", "--check", "src", "tests"],
-    "ruff-check": ["ruff", "check", "src", "tests"],
+    "ruff-format": ["ruff", "format", "--check", "src", "tests", "tools"],
+    "ruff-check": ["ruff", "check", "src", "tests", "tools"],
     "unit-tests": ["pytest", "-q"],
     "live-gimp": ["pytest", "-m", "integration", "-q"],
+    "live-subject-isolation": [
+        "pytest",
+        "-m",
+        "integration",
+        "-q",
+        "tests/test_live_gimp.py",
+        "-k",
+        "synthetic_layer_mask",
+    ],
     "pip-check": ["python", "-m", "pip", "check"],
 }
 
@@ -105,7 +121,7 @@ def _check_result(
         passed_count = re.search(r"(\d+) passed", stdout)
         passed = returncode == 0 and passed_count is not None and " failed" not in stdout
         summary = "The repository unit test suite completed without failures."
-    elif method == "live-gimp":
+    elif method in {"live-gimp", "live-subject-isolation"}:
         passed_count = re.search(r"(\d+) passed", stdout)
         skipped = "skipped" in stdout.lower()
         passed = returncode == 0 and passed_count is not None and not skipped
@@ -162,6 +178,7 @@ def handle(request: dict[str, Any]) -> dict[str, object]:
                 "supported_constructs": [
                     "fixed-command-semantic-parsing",
                     "live-gimp-availability",
+                    "live-subject-isolation-evidence",
                 ],
                 "unsupported_constructs": ["arbitrary-commands", "whole-project-proof"],
                 "limitations": [

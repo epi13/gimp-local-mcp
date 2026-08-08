@@ -4,6 +4,7 @@ import pytest
 
 from gimp_local_mcp.config import Config
 from gimp_local_mcp.errors import GimpConnectionError
+from gimp_local_mcp.gimp.metrics import mask_metrics
 from gimp_local_mcp.gimp.scheme import parse_scheme, unwrap
 from gimp_local_mcp.gimp.transport import ScriptFuClient
 from gimp_local_mcp.service import GimpService
@@ -148,5 +149,35 @@ def test_live_gimp_non_destructive_filters() -> None:
             service.apply_gaussian_blur_filter(layer["layer_id"], float("nan"))
     finally:
         if image_id is not None:
+            service.close_image(image_id, discard=True)
+        service.close()
+
+
+@pytest.mark.integration
+def test_live_synthetic_layer_mask_and_metrics() -> None:
+    service = _live_service()
+    image_id: int | None = None
+    try:
+        image = service.create_image(32, 32)
+        image_id = image["image_id"]
+        layer = service.create_layer(image_id, "Synthetic mask subject")
+        layer_id = layer["layer_id"]
+        service.select_rectangle(image_id, 8, 8, 16, 16)
+        info = service.create_layer_mask(image_id, layer_id, "selection")
+        assert info["has_mask"] is True
+        assert isinstance(info["mask_id"], int)
+        samples = service._sample_mask(info["mask_id"], 32, 32, max_axis_samples=16)  # type: ignore[index]
+        quality = mask_metrics(samples, 32, 32)
+        assert quality["all_transparent"] is False
+        assert quality["all_opaque"] is False
+        assert quality["partial_alpha_ratio"] == 0
+        assert quality["mask_coverage"] > 0
+        disabled = service.set_layer_mask_enabled(image_id, layer_id, False)
+        assert disabled["enabled"] is False
+        enabled = service.set_layer_mask_enabled(image_id, layer_id, True)
+        assert enabled["enabled"] is True
+    finally:
+        if image_id is not None:
+            service.select_none(image_id)
             service.close_image(image_id, discard=True)
         service.close()
