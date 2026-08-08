@@ -119,13 +119,14 @@ Remote connections are rejected unless `GIMP_MCP_ALLOW_REMOTE=true` is set. Loca
 
 ## MCP tools
 
-The current server registers 48 tools across these groups:
+The current server registers 52 tools across these groups:
 
 - Session: `gimp_status`, `gimp_capabilities`, `list_open_images`, `get_active_image`, `get_current_context`, `get_image_info`
 - Files and images: `open_image`, `create_image`, `save_xcf`, `export_image`, `close_image`
 - Layers: `list_layers`, `get_layer_tree`, `get_layer_info`, `get_selected_layers`, `set_selected_layers`, `create_layer`, `create_layer_group`, `duplicate_layer`, `rename_layer`, `delete_layer`, `set_layer_visibility`, `set_layer_opacity`, `set_layer_mode`, `move_layer`, `merge_down`
 - Transforms: `resize_image`, `resize_canvas`, `crop_image`, `rotate_image`, `flip_image`
 - Selection: `select_all`, `select_none`, `invert_selection`, `select_rectangle`, `select_ellipse`, `select_layer_alpha`
+- Masks and subject isolation: `get_layer_mask_info`, `create_layer_mask`, `set_layer_mask_enabled`, `isolate_subject`
 - Adjustments and undo: `brightness_contrast`, `hue_saturation`, `desaturate`, `undo`, `redo`
 - Non-destructive filters: `apply_gaussian_blur_filter`, `apply_brightness_contrast_filter`, `list_drawable_filters`
 - PDB: `search_pdb`, `describe_pdb_procedure`, `invoke_pdb_procedure`
@@ -133,6 +134,17 @@ The current server registers 48 tools across these groups:
 `invoke_pdb_procedure` accepts JSON-compatible structured values, including `{ "scheme_symbol": "RGB" }` for a GIMP enum. It does not accept Scheme source, Python, shell commands, or arbitrary evaluation. Runtime PDB counts and documentation are used when available. Procedure descriptions now include a bounded typed-metadata state (`available`, `partial`, `unavailable`, or `malformed`) plus argument/return records when a trusted structured adapter reports them. The default Script-Fu TCP adapter reports argument metadata as unavailable because Script-Fu does not expose a stable `GimpProcedure`/`GParamSpec` representation; no signatures or types are guessed. Named-argument validation is performed only when trustworthy names are actually available.
 
 GIMP 3 also exposes non-destructive drawable filters through special Script-Fu bindings rather than ordinary PDB procedures. The filter gateway uses the documented `gimp-drawable-append-new-filter` binding with structured named GEGL properties, then reads the actual filter ID and state back through GIMP. The current high-level slices are Gaussian blur and brightness/contrast; they preserve the existing destructive adjustment tool names.
+
+Layer masks use a reusable gateway over the GIMP bindings `gimp-layer-create-mask`,
+`gimp-layer-add-mask`, `gimp-layer-get-mask`, and the mask state accessors. Existing masks are
+reported and never replaced by the public creation tool. `isolate_subject` duplicates the
+explicit source layer, measures the perimeter, and seeds a contiguous-color background selection
+from either light perimeter samples or all perimeter samples when high-key evidence is strong.
+It inverts that selection into a mask and leaves the source layer intact. The
+operation returns baseline and refined observable mask proxies: border transparency, transparent
+and opaque proportions, partial-alpha proportion, edge-transition samples, a sampled retained
+bounding box, and retention relative to the baseline's confident samples. These are not semantic
+accuracy scores.
 
 For document navigation, start with `get_current_context`. It returns the open image IDs, a current-image snapshot when one can be established, the resolution source, and all selected layer IDs. GIMP 3 uses multi-layer selection, so `get_selected_layers` returns a list rather than inventing a single active layer. `get_layer_tree` recursively reports groups and children with stable IDs, parent IDs, positions, and bounded recursion/item limits. The Script-Fu server does not always expose a default-display context; when exactly one image is open, the service reports `single-open-image` as an explicit fallback, and it reports multiple open images as ambiguous instead of guessing.
 
@@ -160,10 +172,19 @@ See [SECURITY.md](SECURITY.md). In brief:
 
 ## Limitations
 
-- Live validation in this iteration used a loopback GIMP 3.2.0 Script-Fu server at `127.0.0.1:10008`. Other GIMP 3 versions still need compatibility validation.
+- Live validation in this iteration used a loopback GIMP 3.2.0 Script-Fu server at `127.0.0.1:10009` (the repository default remains `10008`). Other GIMP 3 versions still need compatibility validation.
 - On the tested GIMP 3.2.0 Script-Fu environment, the legacy `gimp-pdb-query` and `gimp-pdb-proc-exists` helper bindings are unavailable. The typed PDB adapter therefore retains its explicit unavailable fallback; the filter bindings are validated independently. A future bridge adapter should use a supported GIMP-side PDB or GObject-introspection channel rather than guessing signatures.
 - Export metadata behavior uses GIMP’s configured defaults in v0.1; no hidden metadata is added or removed.
+- The tested GIMP 3.2.0 Script-Fu bridge does not expose `gimp-file-export`; `export_image`
+  refuses to fall back to `gimp-file-save`, which could change the open document's associated
+  file. Use GIMP's own export UI until a supported export binding is available.
 - The initial adjustment tools call stable legacy PDB adjustment procedures that GIMP 3.2 marks deprecated in favor of non-destructive filters. Only brightness/contrast and Gaussian blur have non-destructive high-level slices so far.
+- Native foreground extraction was probed and is unavailable through the tested GIMP 3.2.0
+  Script-Fu bridge. Subject isolation therefore currently supports only the bounded
+  `auto`/`high-key-background`/`border-color` contiguous-color fallback. Snow, foliage, and
+  subjects with similar light colors can require manual refinement; the operation deliberately
+  refuses an existing selection or existing source mask and rejects pathological all-transparent
+  or all-opaque results.
 - `get_active_image` uses GIMP’s default display when the Script-Fu context provides one. If that helper is unavailable and exactly one image is open, it returns that image with the same documented single-image fallback used by `get_current_context`; multiple open images remain ambiguous.
 - Selected-layer control and recursive group inspection were validated against GIMP 3.2.0. The bridge rejects empty selection vectors, validates layer/image ownership, and reads selection state back after setting it.
 - Multi-call layer creation and duplication are grouped into one GIMP undo step. Additional composite operations should adopt the same internal helper as they are added.
@@ -176,6 +197,8 @@ See [SECURITY.md](SECURITY.md). In brief:
 4. Validate document context and multi-layer selection semantics against additional GIMP 3.x releases and multi-window setups.
 5. Add explicit export metadata policies and more file-format option models.
 6. Add safe, persistent capability caching with GIMP version invalidation.
+7. Add a supported foreground-extraction/trimap bridge when a GIMP environment exposes one, then
+   compare it against the current high-key fallback on difficult fur and snow benchmarks.
 
 ## Development
 

@@ -4,6 +4,7 @@
     "project.ruff-check",
     "project.unit-tests",
     "project.live-gimp",
+    "project.live-subject-isolation",
     "project.pip-check"
   ]
 }

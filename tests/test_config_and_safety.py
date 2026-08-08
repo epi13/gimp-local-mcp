@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from gimp_local_mcp.config import Config
-from gimp_local_mcp.errors import ConfigurationError, PathPolicyError
+from gimp_local_mcp.errors import ConfigurationError, PathPolicyError, ScriptFuError
 from gimp_local_mcp.service import GimpService
 
 
@@ -35,3 +35,9 @@ def test_output_policy_requires_existing_parent_and_explicit_overwrite(tmp_path:
     assert GimpService._output_file(str(existing), overwrite=True) == existing.resolve()
     with pytest.raises(PathPolicyError):
         GimpService._output_file(str(tmp_path / "missing" / "new.png"), overwrite=True)
+
+
+def test_export_does_not_fall_back_to_save(tmp_path: Path) -> None:
+    service = GimpService.__new__(GimpService)
+    with pytest.raises(ScriptFuError, match="safe gimp-file-export"):
+        service._export(5, tmp_path / "preview.png")

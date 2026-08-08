@@ -17,8 +17,9 @@ Start uncertain editing workflows with get_current_context, then inspect the rec
 tree and selected-layer IDs before targeting a drawable. Prefer ergonomic tools for routine edits,
 and use structured PDB discovery/invocation for unsupported operations. Use identifiers
 returned by this server. Preserve user work and never overwrite files without explicit
-permission. GIMP performs all image manipulation locally; this server does not generate
-replacement pixels or send images to cloud services."""
+permission. Subject isolation duplicates its explicit source layer and applies a bounded layer
+mask; it does not claim semantic segmentation accuracy. GIMP performs all image manipulation
+locally; this server does not generate replacement pixels or send images to cloud services."""
 
 mcp = MCPServer(
     "gimp-local-mcp",
@@ -304,6 +305,48 @@ def select_layer_alpha(image_id: int, layer_id: int) -> dict[str, Any]:
     """Replace the selection with a layer's alpha."""
 
     return _service.select_layer_alpha(image_id, layer_id)
+
+
+@mcp.tool()
+def get_layer_mask_info(image_id: int, layer_id: int) -> dict[str, Any]:
+    """Return the mask identity and enabled/visible/editable state for a layer."""
+
+    return _service.get_layer_mask_info(image_id, layer_id)
+
+
+@mcp.tool()
+def create_layer_mask(image_id: int, layer_id: int, mask_type: str = "selection") -> dict[str, Any]:
+    """Create and attach one bounded GIMP layer mask; existing masks are never replaced."""
+
+    return _service.create_layer_mask(image_id, layer_id, mask_type)
+
+
+@mcp.tool()
+def set_layer_mask_enabled(image_id: int, layer_id: int, enabled: bool) -> dict[str, Any]:
+    """Enable or disable application of an existing layer mask."""
+
+    return _service.set_layer_mask_enabled(image_id, layer_id, enabled)
+
+
+@mcp.tool()
+def isolate_subject(
+    image_id: int,
+    layer_id: int,
+    strategy: str = "auto",
+    background_threshold: int = 48,
+    refinement_threshold: int = 24,
+    feather: int = 1,
+) -> dict[str, Any]:
+    """Duplicate a layer and create a bounded non-destructive high-key subject mask."""
+
+    return _service.isolate_subject(
+        image_id,
+        layer_id,
+        strategy,
+        background_threshold,
+        refinement_threshold,
+        feather,
+    )
 
 
 @mcp.tool()
