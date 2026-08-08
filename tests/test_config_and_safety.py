@@ -9,7 +9,9 @@ from gimp_local_mcp.errors import ConfigurationError, PathPolicyError
 from gimp_local_mcp.service import GimpService
 
 
-def test_default_config_is_localhost() -> None:
+def test_default_config_is_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GIMP_MCP_HOST", raising=False)
+    monkeypatch.delenv("GIMP_MCP_PORT", raising=False)
     config = Config.from_env()
     config.validate()
     assert config.host == "127.0.0.1"

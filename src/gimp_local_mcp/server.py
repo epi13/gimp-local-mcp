@@ -13,7 +13,8 @@ from .service import GimpService
 logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = """GIMP Local MCP controls a local GIMP 3 instance through its Script-Fu server.
-Inspect image and layer state when uncertain, prefer ergonomic tools for routine edits,
+Start uncertain editing workflows with get_current_context, then inspect the recursive layer
+tree and selected-layer IDs before targeting a drawable. Prefer ergonomic tools for routine edits,
 and use structured PDB discovery/invocation for unsupported operations. Use identifiers
 returned by this server. Preserve user work and never overwrite files without explicit
 permission. GIMP performs all image manipulation locally; this server does not generate
@@ -52,9 +53,16 @@ def list_open_images() -> list[dict[str, Any]]:
 
 @mcp.tool()
 def get_active_image() -> dict[str, Any] | None:
-    """Return the image associated with GIMP's default display, if available."""
+    """Return the current image, or the sole open image when no display context is exposed."""
 
     return _service.get_active_image()
+
+
+@mcp.tool()
+def get_current_context() -> dict[str, Any]:
+    """Return a concise current-image and multi-layer selection snapshot for editing."""
+
+    return _service.get_current_context()
 
 
 @mcp.tool()
@@ -107,6 +115,29 @@ def list_layers(image_id: int) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def get_layer_tree(
+    image_id: int, max_depth: int = 32, max_items: int = 1000
+) -> list[dict[str, Any]]:
+    """Return the bounded recursive layer and group hierarchy for an image."""
+
+    return _service.get_layer_tree(image_id, max_depth=max_depth, max_items=max_items)
+
+
+@mcp.tool()
+def get_selected_layers(image_id: int) -> list[dict[str, Any]]:
+    """Return all selected layers; GIMP 3 supports multi-layer selection."""
+
+    return _service.get_selected_layers(image_id)
+
+
+@mcp.tool()
+def set_selected_layers(image_id: int, layer_ids: list[int]) -> dict[str, Any]:
+    """Set selected layers and return the state read back from GIMP."""
+
+    return _service.set_selected_layers(image_id, layer_ids)
+
+
+@mcp.tool()
 def get_layer_info(image_id: int, layer_id: int) -> dict[str, Any]:
     """Return stable properties for a layer/drawable."""
 
@@ -120,10 +151,18 @@ def create_layer(
     width: int | None = None,
     height: int | None = None,
     opacity: float = 100.0,
+    parent_id: int | None = None,
 ) -> dict[str, Any]:
-    """Create a transparent RGBA layer at the top of an image."""
+    """Create a transparent RGBA layer at the top of an image or group."""
 
-    return _service.create_layer(image_id, name, width, height, opacity)
+    return _service.create_layer(image_id, name, width, height, opacity, parent_id)
+
+
+@mcp.tool()
+def create_layer_group(image_id: int, name: str, parent_id: int | None = None) -> dict[str, Any]:
+    """Create a layer group at the top of an image or existing group."""
+
+    return _service.create_layer_group(image_id, name, parent_id)
 
 
 @mcp.tool()

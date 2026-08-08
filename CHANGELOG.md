@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added a bounded current-document context snapshot, recursive layer/group trees, GIMP 3
+  multi-layer selection inspection/control, parent/image ownership checks, and reusable group-layer
+  creation. Live tests preserve the pre-existing user image and use a separate temporary image for
+  nested-group mutation coverage.
+- Made the Forge project verifier suppress generated Python bytecode so checks do not mutate the
+  candidate content scope.
 - Added a reusable structured non-destructive drawable-filter gateway with Gaussian blur and
   brightness/contrast MCP tools, bounded GEGL parameters, filter identity/state inspection, and
   live GIMP integration coverage.

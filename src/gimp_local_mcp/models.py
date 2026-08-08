@@ -32,6 +32,20 @@ class LayerInfo:
     mode: str | int | None
     position: int
     parent_id: int | None
+    is_group: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class LayerNode:
+    """A bounded recursive layer-tree node reported by GIMP."""
+
+    info: LayerInfo
+    children: tuple[LayerNode, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        result = self.info.as_dict()
+        result["children"] = [child.as_dict() for child in self.children]
+        return result

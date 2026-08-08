@@ -9,6 +9,11 @@ def test_server_uses_official_mcp_server_and_registers_tools() -> None:
     assert {
         "gimp_status",
         "list_open_images",
+        "get_current_context",
+        "get_layer_tree",
+        "get_selected_layers",
+        "set_selected_layers",
+        "create_layer_group",
         "invoke_pdb_procedure",
         "apply_gaussian_blur_filter",
         "apply_brightness_contrast_filter",

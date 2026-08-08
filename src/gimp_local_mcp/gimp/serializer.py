@@ -36,6 +36,13 @@ class SchemeNull:
     """The Script-Fu representation of a nullable GIMP object (ID -1)."""
 
 
+@dataclass(frozen=True, slots=True)
+class SchemeVector:
+    """A bounded structured Scheme vector, used for GIMP object arrays."""
+
+    values: tuple[Any, ...]
+
+
 def validate_procedure_name(name: str) -> str:
     if not isinstance(name, str) or not _PROCEDURE_RE.fullmatch(name):
         raise ProcedureNameError(
@@ -69,6 +76,8 @@ def scheme_value(value: Any) -> str:
         return value.name
     if isinstance(value, SchemeNull):
         return "-1"
+    if isinstance(value, SchemeVector):
+        return "#(" + " ".join(scheme_value(item) for item in value.values) + ")"
     if value is None:
         return "#f"
     if value is True:
