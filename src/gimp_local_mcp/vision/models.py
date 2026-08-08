@@ -156,6 +156,29 @@ class VisionCapabilities:
     test_inference_success: bool | None = None
     instance_segmentation: bool = False
     automatic_discovery: bool = False
+    model_revision: str | None = None
+    execution_device: str | None = None
+    execution_mode: str | None = None
+    offload_mode: str | None = None
+    placement_reason: str | None = None
+    torch_supported_architectures: tuple[str, ...] = ()
+    cuda_kernel_smoke_test_success: bool | None = None
+    cuda_kernel_smoke_test_error: str | None = None
+    float16_execution_success: bool | None = None
+    bfloat16_execution_success: bool | None = None
+    free_vram_bytes_at_startup: int | None = None
+    configured_gpu_reserve_bytes: int | None = None
+    effective_gpu_budget_bytes: int | None = None
+    model_storage_bytes: int | None = None
+    peak_cuda_allocated_bytes: int | None = None
+    peak_cuda_reserved_bytes: int | None = None
+    persistent_cuda_parameter_bytes: int | None = None
+    offloaded_meta_parameter_bytes: int | None = None
+    sequential_offload_hook_count: int | None = None
+    sequential_offload_verified: bool | None = None
+    rss_peak_bytes: int | None = None
+    model_load_seconds: float | None = None
+    test_inference_seconds: float | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.provider, "provider", 64)
@@ -171,16 +194,41 @@ class VisionCapabilities:
             "torch_cuda_version",
             "gpu_name",
             "compute_capability",
+            "model_revision",
+            "execution_device",
+            "execution_mode",
+            "offload_mode",
+            "placement_reason",
+            "cuda_kernel_smoke_test_error",
         ):
             value = getattr(self, name)
             if value is not None:
                 _bounded_text(value, name, 256)
-        for name in ("total_vram_bytes", "available_vram_bytes", "model_memory_bytes"):
+        for name in (
+            "total_vram_bytes",
+            "available_vram_bytes",
+            "model_memory_bytes",
+            "free_vram_bytes_at_startup",
+            "configured_gpu_reserve_bytes",
+            "effective_gpu_budget_bytes",
+            "model_storage_bytes",
+            "peak_cuda_allocated_bytes",
+            "peak_cuda_reserved_bytes",
+            "persistent_cuda_parameter_bytes",
+            "offloaded_meta_parameter_bytes",
+            "sequential_offload_hook_count",
+            "rss_peak_bytes",
+        ):
             value = getattr(self, name)
             if value is not None and (
                 not isinstance(value, int) or isinstance(value, bool) or value < 0
             ):
                 raise ValueError(f"{name} must be a non-negative integer or null")
+        if len(self.torch_supported_architectures) > 64 or any(
+            not isinstance(item, str) or len(item) > 32
+            for item in self.torch_supported_architectures
+        ):
+            raise ValueError("torch_supported_architectures is malformed")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -209,6 +257,29 @@ class VisionCapabilities:
             "test_inference_success": self.test_inference_success,
             "instance_segmentation": self.instance_segmentation,
             "automatic_discovery": self.automatic_discovery,
+            "model_revision": self.model_revision,
+            "execution_device": self.execution_device,
+            "execution_mode": self.execution_mode,
+            "offload_mode": self.offload_mode,
+            "placement_reason": self.placement_reason,
+            "torch_supported_architectures": list(self.torch_supported_architectures),
+            "cuda_kernel_smoke_test_success": self.cuda_kernel_smoke_test_success,
+            "cuda_kernel_smoke_test_error": self.cuda_kernel_smoke_test_error,
+            "float16_execution_success": self.float16_execution_success,
+            "bfloat16_execution_success": self.bfloat16_execution_success,
+            "free_vram_bytes_at_startup": self.free_vram_bytes_at_startup,
+            "configured_gpu_reserve_bytes": self.configured_gpu_reserve_bytes,
+            "effective_gpu_budget_bytes": self.effective_gpu_budget_bytes,
+            "model_storage_bytes": self.model_storage_bytes,
+            "peak_cuda_allocated_bytes": self.peak_cuda_allocated_bytes,
+            "peak_cuda_reserved_bytes": self.peak_cuda_reserved_bytes,
+            "persistent_cuda_parameter_bytes": self.persistent_cuda_parameter_bytes,
+            "offloaded_meta_parameter_bytes": self.offloaded_meta_parameter_bytes,
+            "sequential_offload_hook_count": self.sequential_offload_hook_count,
+            "sequential_offload_verified": self.sequential_offload_verified,
+            "rss_peak_bytes": self.rss_peak_bytes,
+            "model_load_seconds": self.model_load_seconds,
+            "test_inference_seconds": self.test_inference_seconds,
         }
 
     @classmethod
@@ -220,42 +291,46 @@ class VisionCapabilities:
             "text_segmentation",
             "visual_prompts",
             "soft_alpha",
-            "cuda_available",
-            "checkpoint_available",
-            "model_load_success",
-            "test_inference_success",
             "instance_segmentation",
             "automatic_discovery",
         ):
             if field_name in value and not isinstance(value[field_name], bool):
                 raise ValueError(f"capability {field_name} must be boolean")
-        return cls(
-            value.get("provider", "unknown"),
-            value.get("available") is True,
-            value.get("model"),
-            value.get("text_segmentation") is True,
-            value.get("visual_prompts") is True,
-            value.get("soft_alpha") is True,
-            value.get("backend"),
-            value.get("reason"),
-            value.get("runtime"),
-            value.get("device"),
-            value.get("accelerator"),
-            value.get("dtype"),
-            value.get("torch_version"),
-            value.get("torch_cuda_version"),
-            value.get("cuda_available"),
-            value.get("gpu_name"),
-            value.get("compute_capability"),
-            value.get("total_vram_bytes"),
-            value.get("available_vram_bytes"),
-            value.get("model_memory_bytes"),
-            value.get("checkpoint_available"),
-            value.get("model_load_success"),
-            value.get("test_inference_success"),
-            value.get("instance_segmentation") is True,
-            value.get("automatic_discovery") is True,
+        for field_name in (
+            "cuda_available",
+            "checkpoint_available",
+            "model_load_success",
+            "test_inference_success",
+            "cuda_kernel_smoke_test_success",
+            "float16_execution_success",
+            "bfloat16_execution_success",
+            "sequential_offload_verified",
+        ):
+            if (
+                field_name in value
+                and value[field_name] is not None
+                and not isinstance(value[field_name], bool)
+            ):
+                raise ValueError(f"capability {field_name} must be boolean or null")
+        architectures = value.get("torch_supported_architectures", [])
+        if not isinstance(architectures, list):
+            raise ValueError("torch_supported_architectures must be a list")
+        fields = cls.__dataclass_fields__
+        arguments = {name: value.get(name) for name in fields if name in value}
+        arguments.update(
+            provider=value.get("provider", "unknown"),
+            available=value.get("available") is True,
+            torch_supported_architectures=tuple(architectures),
         )
+        for name in (
+            "text_segmentation",
+            "visual_prompts",
+            "soft_alpha",
+            "instance_segmentation",
+            "automatic_discovery",
+        ):
+            arguments[name] = value.get(name) is True
+        return cls(**arguments)
 
 
 @dataclass(frozen=True, slots=True)

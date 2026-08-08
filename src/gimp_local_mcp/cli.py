@@ -83,6 +83,38 @@ def _doctor() -> int:
             f"compute capability={vision.get('compute_capability') or 'none'}"
         )
         print(
+            "CUDA execution: "
+            f"kernel smoke test={vision.get('cuda_kernel_smoke_test_success')}; "
+            f"error={vision.get('cuda_kernel_smoke_test_error') or 'none'}; "
+            f"Torch architectures={vision.get('torch_supported_architectures') or []}; "
+            f"FP16={vision.get('float16_execution_success')}; "
+            f"BF16={vision.get('bfloat16_execution_success')}"
+        )
+        print(
+            "Provider placement: "
+            f"mode={vision.get('execution_mode') or 'none'}; "
+            f"execution device={vision.get('execution_device') or 'none'}; "
+            f"offload={vision.get('offload_mode') or 'none'}; "
+            f"dtype={vision.get('dtype') or 'none'}; "
+            f"reason={vision.get('placement_reason') or 'not reported'}"
+        )
+        print(
+            "Provider memory: "
+            f"free at startup={vision.get('free_vram_bytes_at_startup')}; "
+            f"reserve={vision.get('configured_gpu_reserve_bytes')}; "
+            f"budget={vision.get('effective_gpu_budget_bytes')}; "
+            f"model={vision.get('model_storage_bytes')}; "
+            f"peak allocated={vision.get('peak_cuda_allocated_bytes')}; "
+            f"peak reserved={vision.get('peak_cuda_reserved_bytes')}"
+        )
+        print(
+            "Sequential offload evidence: "
+            f"verified={vision.get('sequential_offload_verified')}; "
+            f"hooks={vision.get('sequential_offload_hook_count')}; "
+            f"CPU-backed/meta parameters={vision.get('offloaded_meta_parameter_bytes')}; "
+            f"persistent CUDA parameters={vision.get('persistent_cuda_parameter_bytes')}"
+        )
+        print(
             "Provider readiness: "
             f"checkpoint={vision.get('checkpoint_available')}; "
             f"model load={vision.get('model_load_success')}; "

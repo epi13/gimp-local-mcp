@@ -37,7 +37,13 @@ _COMMANDS = {
     "ruff-format": ["ruff", "format", "--check", "src", "tests", "tools"],
     "ruff-check": ["ruff", "check", "src", "tests", "tools"],
     "unit-tests": ["pytest", "-q"],
-    "vision-unit-tests": ["pytest", "-q", "tests/test_vision.py", "tests/test_vision_routing.py"],
+    "vision-unit-tests": [
+        "pytest",
+        "-q",
+        "tests/test_vision.py",
+        "tests/test_vision_routing.py",
+        "tests/test_vision_runtime.py",
+    ],
     "layer-decomposition-tests": ["pytest", "-q", "tests/test_layer_decomposition.py"],
     "live-gimp": ["pytest", "-m", "integration", "-q"],
     "live-subject-isolation": [
@@ -268,9 +274,7 @@ def handle(request: dict[str, Any]) -> dict[str, object]:
             request,
             "UNKNOWN",
             "No ground-truth mask is available, so semantic pixel accuracy is not established.",
-            limitations=[
-                "provider confidence and mask proxies are not accuracy or IoU evidence"
-            ],
+            limitations=["provider confidence and mask proxies are not accuracy or IoU evidence"],
             unsupported=["semantic-quality-proof-without-ground-truth"],
         )
     return _check_result(method, _run(method), request)

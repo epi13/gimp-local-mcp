@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added a reusable Torch vision runtime with measured CPU, full-CUDA, and true Accelerate
+  sequential-CPU-offload placement; dynamic free-VRAM reserve/cap policy; probed dtype selection;
+  allocator/RSS/hook residency evidence; and bounded AUTO CUDA-OOM recovery.
+- Migrated CLIPSeg from its fixed 1.5 GiB threshold to the shared runtime and added a same-input
+  CPU/full-CUDA/sequential benchmark command. CUDA readiness now requires a real matmul, exposing
+  incompatible wheels that merely report CUDA available.
+- Replaced the SAM 3 diagnostic stub with an offline official Meta image adapter for tested text and
+  box grounding, multiple masks/scores/boxes, explicit gated checkpoint setup, and honest binary
+  mask/refinement capability boundaries. Normal operation never downloads weights.
 - Added the real offline-by-default CLIPSeg worker in a separately managed vision environment,
   explicit checkpoint download, conservative CPU/CUDA selection, typed OOM errors, and provider
   readiness metadata for Torch, CUDA, device, VRAM, checkpoint, model load, and self-test state.

@@ -38,6 +38,10 @@ class Config:
     vision_command: tuple[str, ...] | None = None
     vision_timeout: float = 60.0
     vision_device: str = "auto"
+    vision_offload: str = "auto"
+    vision_gpu_reserve_mib: int = 256
+    vision_max_vram_mib: int | None = None
+    vision_dtype: str = "auto"
 
     @classmethod
     def from_env(cls) -> Config:
@@ -92,6 +96,22 @@ class Config:
         vision_device = os.getenv("GIMP_MCP_VISION_DEVICE", "auto").strip().lower()
         if vision_device not in {"auto", "cpu", "cuda"}:
             raise ConfigurationError("GIMP_MCP_VISION_DEVICE must be auto, cpu, or cuda")
+        vision_offload = os.getenv("GIMP_MCP_VISION_OFFLOAD", "auto").strip().lower()
+        if vision_offload not in {"auto", "none", "sequential-cpu"}:
+            raise ConfigurationError(
+                "GIMP_MCP_VISION_OFFLOAD must be auto, none, or sequential-cpu"
+            )
+        vision_dtype = os.getenv("GIMP_MCP_VISION_DTYPE", "auto").strip().lower()
+        if vision_dtype not in {"auto", "float32", "float16", "bfloat16"}:
+            raise ConfigurationError(
+                "GIMP_MCP_VISION_DTYPE must be auto, float32, float16, or bfloat16"
+            )
+        max_vram_text = os.getenv("GIMP_MCP_VISION_MAX_VRAM_MIB")
+        vision_max_vram_mib = (
+            integer("GIMP_MCP_VISION_MAX_VRAM_MIB", 128, 128, 1_048_576)
+            if max_vram_text is not None
+            else None
+        )
         return cls(
             host=os.getenv("GIMP_MCP_HOST", "127.0.0.1"),
             port=integer("GIMP_MCP_PORT", 10008, 1, 65_535),
@@ -103,6 +123,10 @@ class Config:
             vision_command=vision_command,
             vision_timeout=positive_float("GIMP_MCP_VISION_TIMEOUT", 60.0),
             vision_device=vision_device,
+            vision_offload=vision_offload,
+            vision_gpu_reserve_mib=integer("GIMP_MCP_VISION_GPU_RESERVE_MIB", 256, 0, 1_048_576),
+            vision_max_vram_mib=vision_max_vram_mib,
+            vision_dtype=vision_dtype,
         )
 
     def validate(self) -> None:
@@ -136,6 +160,24 @@ class Config:
             raise ConfigurationError("Vision worker timeout must be between zero and 600 seconds")
         if self.vision_device not in {"auto", "cpu", "cuda"}:
             raise ConfigurationError("Vision device must be auto, cpu, or cuda")
+        if self.vision_offload not in {"auto", "none", "sequential-cpu"}:
+            raise ConfigurationError("Vision offload must be auto, none, or sequential-cpu")
+        if self.vision_device == "cpu" and self.vision_offload == "sequential-cpu":
+            raise ConfigurationError("Sequential CPU offload requires auto or cuda device mode")
+        if (
+            not isinstance(self.vision_gpu_reserve_mib, int)
+            or isinstance(self.vision_gpu_reserve_mib, bool)
+            or not 0 <= self.vision_gpu_reserve_mib <= 1_048_576
+        ):
+            raise ConfigurationError("Vision GPU reserve must be between 0 and 1048576 MiB")
+        if self.vision_max_vram_mib is not None and (
+            not isinstance(self.vision_max_vram_mib, int)
+            or isinstance(self.vision_max_vram_mib, bool)
+            or not 128 <= self.vision_max_vram_mib <= 1_048_576
+        ):
+            raise ConfigurationError("Vision maximum VRAM must be between 128 and 1048576 MiB")
+        if self.vision_dtype not in {"auto", "float32", "float16", "bfloat16"}:
+            raise ConfigurationError("Vision dtype must be auto, float32, float16, or bfloat16")
         if self.vision_provider == "none" and self.vision_command is not None:
             raise ConfigurationError(
                 "GIMP_MCP_VISION_COMMAND requires a configured vision provider"

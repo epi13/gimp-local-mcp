@@ -160,6 +160,29 @@ def test_gpu_capability_metadata_is_typed() -> None:
         )
 
 
+def test_extended_placement_capabilities_are_optional_and_bounded() -> None:
+    legacy = VisionCapabilities.from_dict({"provider": "legacy", "available": True})
+    assert legacy.execution_mode is None
+    capabilities = VisionCapabilities.from_dict(
+        {
+            "provider": "offload",
+            "available": True,
+            "execution_device": "cuda",
+            "execution_mode": "sequential-cpu-offload",
+            "offload_mode": "sequential-cpu",
+            "torch_supported_architectures": ["sm_60", "sm_70"],
+            "cuda_kernel_smoke_test_success": True,
+            "sequential_offload_verified": True,
+            "offloaded_meta_parameter_bytes": 1234,
+            "persistent_cuda_parameter_bytes": 0,
+        }
+    )
+    assert capabilities.torch_supported_architectures == ("sm_60", "sm_70")
+    assert capabilities.sequential_offload_verified is True
+    assert capabilities.as_dict()["offload_mode"] == "sequential-cpu"
+    assert VisionCapabilities.from_dict(legacy.as_dict()) == legacy
+
+
 def test_malformed_worker_response_becomes_unavailable_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Local CLIPSeg text-segmentation worker with offline-by-default model loading.
-
-Install ML dependencies and download the checkpoint explicitly in a separate
-environment. Normal JSONL operation uses only local files and never performs a
-network request.
-"""
+"""Offline-by-default CLIPSeg worker with measured Torch placement."""
 
 from __future__ import annotations
 
@@ -14,23 +9,44 @@ import logging
 import math
 import os
 import platform
-import resource
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-REPOSITORY_SRC = Path(__file__).resolve().parents[2] / "src"
-if str(REPOSITORY_SRC) not in sys.path:
-    sys.path.insert(0, str(REPOSITORY_SRC))
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_SRC = REPOSITORY_ROOT / "src"
+for search_path in (REPOSITORY_SRC, REPOSITORY_ROOT):
+    if str(search_path) not in sys.path:
+        sys.path.insert(0, str(search_path))
+
+from tools.vision.runtime import (  # noqa: E402
+    PlacementDecision,
+    PlacementError,
+    RuntimePolicy,
+    apply_placement,
+    collect_cuda_diagnostics,
+    cuda_memory_snapshot,
+    decide_placement,
+    fallback_policy_after_oom,
+    is_cuda_oom,
+    offload_evidence,
+    parameter_storage_bytes,
+    reset_cuda_peaks,
+    restore_model_to_cpu,
+    rss_peak_bytes,
+)
 
 PROTOCOL_VERSION = "0.1"
 MODEL_ID = os.getenv("GIMP_MCP_CLIPSEG_MODEL", "CIDAS/clipseg-rd64-refined")
-DEVICE_REQUEST = os.getenv("GIMP_MCP_VISION_DEVICE", "auto").strip().lower()
+MODEL_REVISION = os.getenv("GIMP_MCP_CLIPSEG_REVISION") or None
 MASK_THRESHOLD = 0.2
 MASK_SLOPE = 2.0
-MIN_AUTO_CUDA_FREE = 1536 * 1024 * 1024
 logger = logging.getLogger("gimp-local-mcp.clipseg-worker")
+CLIPSEG_PRELOAD_MODULE_CLASSES = (
+    "CLIPSegVisionEmbeddings",
+    "CLIPSegTextEmbeddings",
+)
 
 
 class WorkerUnavailable(RuntimeError):
@@ -42,17 +58,23 @@ class WorkerOutOfMemory(RuntimeError):
 
 
 class ClipSegRuntime:
+    """Own one model and move it among CPU, CUDA, and Accelerate offload modes."""
+
     def __init__(self) -> None:
         self.torch: Any = None
         self.processor: Any = None
         self.model: Any = None
-        self.device = "cpu"
-        self.dtype = "float32"
+        self.image_type: Any = None
+        self.policy: RuntimePolicy | None = None
+        self.decision: PlacementDecision | None = None
+        self.diagnostics: dict[str, Any] = {}
+        self.memory: dict[str, Any] = {}
+        self.evidence: dict[str, Any] = {}
         self.load_seconds: float | None = None
         self.self_test_seconds: float | None = None
         self.self_test_success = False
-        self.reason: str | None = None
-        self._diagnostics: dict[str, Any] = {}
+        self.placement_attempts: list[str] = []
+        self.oom_recovery_path: list[str] = []
 
     def _import_dependencies(self) -> tuple[Any, Any, Any, Any]:
         try:
@@ -65,140 +87,200 @@ class ClipSegRuntime:
             ) from exc
         return torch, Image, CLIPSegForImageSegmentation, CLIPSegProcessor
 
-    def _device_diagnostics(self, torch: Any) -> dict[str, Any]:
-        cuda_available = bool(torch.cuda.is_available())
-        result: dict[str, Any] = {
-            "torch_version": str(torch.__version__),
-            "torch_cuda_version": str(torch.version.cuda) if torch.version.cuda else None,
-            "cuda_available": cuda_available,
-            "gpu_name": None,
-            "compute_capability": None,
-            "total_vram_bytes": None,
-            "available_vram_bytes": None,
-        }
-        if cuda_available:
-            free, total = torch.cuda.mem_get_info(0)
-            major, minor = torch.cuda.get_device_capability(0)
-            result.update(
-                gpu_name=str(torch.cuda.get_device_name(0)),
-                compute_capability=f"{major}.{minor}",
-                total_vram_bytes=int(total),
-                available_vram_bytes=int(free),
+    def _place(self, policy: RuntimePolicy) -> None:
+        if self.model is None:
+            raise WorkerUnavailable("CLIPSeg model is not loaded")
+        if self.decision is not None:
+            restore_model_to_cpu(self.model, self.torch)
+        decision = decide_placement(
+            policy,
+            self._cuda_diagnostics,
+            self.model_storage_bytes,
+            sequential_offload_supported=True,
+        )
+        self.decision = decision
+        try:
+            self.model = apply_placement(
+                self.model,
+                self.torch,
+                decision,
+                preload_module_classes=CLIPSEG_PRELOAD_MODULE_CLASSES,
             )
-        return result
+        except Exception as exc:
+            if is_cuda_oom(self.torch, exc):
+                raise WorkerOutOfMemory(
+                    f"CLIPSeg {decision.execution_mode} model placement exhausted CUDA memory"
+                ) from exc
+            if isinstance(exc, PlacementError):
+                raise WorkerUnavailable(str(exc)) from exc
+            raise
+        self.model.eval()
+        self.placement_attempts.append(decision.execution_mode)
+        self.memory["after_model_placement"] = cuda_memory_snapshot(self.torch)
+        self.evidence = offload_evidence(self.model, inference_completed=False)
 
-    def _choose_device(self, diagnostics: dict[str, Any]) -> str:
-        if DEVICE_REQUEST not in {"auto", "cpu", "cuda"}:
-            raise WorkerUnavailable("GIMP_MCP_VISION_DEVICE must be auto, cpu, or cuda")
-        if DEVICE_REQUEST == "cpu":
-            return "cpu"
-        if DEVICE_REQUEST == "cuda":
-            if not diagnostics["cuda_available"]:
-                raise WorkerUnavailable("CUDA was requested but is unavailable to provider Python")
-            return "cuda"
-        free = diagnostics.get("available_vram_bytes")
-        if diagnostics["cuda_available"] and isinstance(free, int) and free >= MIN_AUTO_CUDA_FREE:
-            return "cuda"
-        return "cpu"
+    def _recover_oom(self) -> bool:
+        assert self.policy is not None and self.decision is not None
+        next_policy = fallback_policy_after_oom(
+            self.policy,
+            self.decision.execution_mode,
+            sequential_offload_supported=True,
+        )
+        if next_policy is None:
+            return False
+        previous = self.decision.execution_mode
+        restore_model_to_cpu(self.model, self.torch)
+        self.decision = None
+        self._place(next_policy)
+        transition = f"{previous}->{self.decision.execution_mode}"
+        self.oom_recovery_path.append(transition)
+        return True
+
+    def _forward(self, image: Any, prompt: str) -> Any:
+        attempts = 0
+        while True:
+            assert self.decision is not None
+            inputs = None
+            try:
+                inputs = self.processor(
+                    text=[prompt], images=[image], padding=True, return_tensors="pt"
+                )
+                inputs = {
+                    name: value.to(self.decision.execution_device) for name, value in inputs.items()
+                }
+                reset_cuda_peaks(self.torch)
+                with self.torch.inference_mode():
+                    logits = self.model(**inputs).logits
+                self.memory["inference_peak"] = cuda_memory_snapshot(self.torch)
+                self.evidence = offload_evidence(self.model, inference_completed=True)
+                return logits
+            except Exception as exc:
+                if not is_cuda_oom(self.torch, exc):
+                    raise
+                del inputs
+                attempts += 1
+                if attempts > 2 or not self._recover_oom():
+                    raise WorkerOutOfMemory(
+                        f"CLIPSeg {self.decision.execution_mode} inference exhausted memory"
+                    ) from exc
 
     def ensure_loaded(self) -> None:
         if self.model is not None:
             return
         started = time.perf_counter()
         torch, image_type, model_type, processor_type = self._import_dependencies()
-        diagnostics = self._device_diagnostics(torch)
-        device = self._choose_device(diagnostics)
-        dtype = torch.float16 if device == "cuda" else torch.float32
+        self.torch = torch
+        self.image_type = image_type
+        self.policy = RuntimePolicy.from_env()
+        self._cuda_diagnostics = collect_cuda_diagnostics(torch)
+        self.diagnostics = self._cuda_diagnostics.as_dict()
         try:
-            processor = processor_type.from_pretrained(MODEL_ID, local_files_only=True)
+            processor = processor_type.from_pretrained(
+                MODEL_ID, revision=MODEL_REVISION, local_files_only=True
+            )
             model = model_type.from_pretrained(
                 MODEL_ID,
+                revision=MODEL_REVISION,
                 local_files_only=True,
-                dtype=dtype,
+                dtype=torch.float32,
             )
-            model.to(device)
             model.eval()
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                raise WorkerOutOfMemory(
-                    "CLIPSeg model load exceeded available accelerator memory; use cpu"
-                ) from exc
-            raise WorkerUnavailable(f"CLIPSeg model load failed: {type(exc).__name__}") from exc
         except OSError as exc:
             raise WorkerUnavailable(
                 "CLIPSeg checkpoint is not available locally; run this worker with "
                 "--download-model during explicit setup"
             ) from exc
-        self.torch = torch
+        except Exception as exc:
+            raise WorkerUnavailable(
+                f"CLIPSeg model load failed: {type(exc).__name__}: {str(exc)[:256]}"
+            ) from exc
         self.processor = processor
         self.model = model
-        self.device = device
-        self.dtype = str(dtype).removeprefix("torch.")
-        self.load_seconds = time.perf_counter() - started
-        self._diagnostics = diagnostics
-        self._diagnostics["model_memory_bytes"] = int(
-            sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())
-        )
-        self._self_test(image_type)
-
-    def _self_test(self, image_type: Any) -> None:
-        started = time.perf_counter()
-        sample = image_type.new("RGB", (32, 32), (127, 127, 127))
+        self.model_storage_bytes = parameter_storage_bytes(model)
+        self.diagnostics["model_memory_bytes"] = self.model_storage_bytes
         try:
-            inputs = self.processor(
-                text=["object"], images=[sample], padding=True, return_tensors="pt"
+            self._place(self.policy)
+        except WorkerOutOfMemory:
+            assert self.decision is not None
+            fallback = fallback_policy_after_oom(
+                self.policy,
+                self.decision.execution_mode,
+                sequential_offload_supported=True,
             )
-            inputs = {name: value.to(self.device) for name, value in inputs.items()}
-            with self.torch.inference_mode():
-                output = self.model(**inputs).logits
+            if fallback is None:
+                raise
+            self._place(fallback)
+            self.oom_recovery_path.append(f"load->{self.decision.execution_mode}")
+        self.load_seconds = time.perf_counter() - started
+        self._self_test()
+
+    def _self_test(self) -> None:
+        started = time.perf_counter()
+        sample = self.image_type.new("RGB", (32, 32), (127, 127, 127))
+        try:
+            output = self._forward(sample, "object")
             if output.numel() == 0 or not bool(self.torch.isfinite(output).all()):
                 raise WorkerUnavailable("CLIPSeg self-test returned malformed logits")
             self.self_test_success = True
             self.self_test_seconds = time.perf_counter() - started
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                if self.torch.cuda.is_available():
-                    self.torch.cuda.empty_cache()
-                raise WorkerOutOfMemory("CLIPSeg self-test exceeded accelerator memory") from exc
-            raise WorkerUnavailable(f"CLIPSeg self-test failed: {type(exc).__name__}") from exc
+        except WorkerOutOfMemory:
+            raise
+        except Exception as exc:
+            raise WorkerUnavailable(
+                f"CLIPSeg self-test failed: {type(exc).__name__}: {str(exc)[:256]}"
+            ) from exc
 
     def capabilities(self) -> dict[str, Any]:
+        reason = None
         try:
             self.ensure_loaded()
             available = True
-            reason = None
-        except (WorkerUnavailable, WorkerOutOfMemory) as exc:
+        except (WorkerUnavailable, WorkerOutOfMemory, PlacementError) as exc:
             available = False
             reason = str(exc)
-            self.reason = reason
             if self.torch is None:
                 try:
                     torch, _image, _model, _processor = self._import_dependencies()
                     self.torch = torch
-                    self._diagnostics = self._device_diagnostics(torch)
+                    self._cuda_diagnostics = collect_cuda_diagnostics(torch)
+                    self.diagnostics = self._cuda_diagnostics.as_dict()
                 except WorkerUnavailable:
                     pass
+        decision = self.decision.as_dict() if self.decision else {}
+        peak = self.memory.get("inference_peak", {})
         return {
             "provider": "clipseg",
             "available": available,
             "model": MODEL_ID,
+            "model_revision": MODEL_REVISION,
             "text_segmentation": available,
             "visual_prompts": False,
             "soft_alpha": True,
             "backend": "transformers-clipseg",
             "runtime": f"Python {platform.python_version()}",
             "reason": reason,
-            "device": self.device if available else None,
-            "accelerator": "CUDA" if available and self.device == "cuda" else "CPU",
-            "dtype": self.dtype if available else None,
-            **self._diagnostics,
+            "device": decision.get("device"),
+            "execution_device": decision.get("execution_device"),
+            "execution_mode": decision.get("execution_mode"),
+            "offload_mode": decision.get("offload_mode"),
+            "placement_reason": decision.get("reason"),
+            "accelerator": "CUDA" if decision.get("device") == "cuda" else "CPU",
+            "dtype": decision.get("dtype"),
+            **self.diagnostics,
+            "configured_gpu_reserve_bytes": decision.get("configured_gpu_reserve_bytes"),
+            "effective_gpu_budget_bytes": decision.get("effective_gpu_budget_bytes"),
+            "model_storage_bytes": getattr(self, "model_storage_bytes", None),
             "checkpoint_available": self.model is not None,
             "model_load_success": self.model is not None,
             "test_inference_success": self.self_test_success,
             "instance_segmentation": False,
             "automatic_discovery": False,
+            "peak_cuda_allocated_bytes": peak.get("cuda_peak_allocated_bytes"),
+            "peak_cuda_reserved_bytes": peak.get("cuda_peak_reserved_bytes"),
+            **self.evidence,
+            "rss_peak_bytes": rss_peak_bytes(),
+            "model_load_seconds": self.load_seconds,
+            "test_inference_seconds": self.self_test_seconds,
         }
 
     def segment(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -215,35 +297,17 @@ class ClipSegRuntime:
             raise ValueError("prompt must be a non-empty string of at most 256 characters")
         if mode == "automatic":
             raise WorkerUnavailable("CLIPSeg does not support automatic object discovery")
-        from PIL import Image
-
-        image = Image.open(image_path).convert("RGB")
+        image = self.image_type.open(image_path).convert("RGB")
         started = time.perf_counter()
-        try:
-            inputs = self.processor(
-                text=[prompt.strip()], images=[image], padding=True, return_tensors="pt"
-            )
-            inputs = {name: value.to(self.device) for name, value in inputs.items()}
-            if self.device == "cuda":
-                self.torch.cuda.reset_peak_memory_stats(0)
-            with self.torch.inference_mode():
-                logits = self.model(**inputs).logits.unsqueeze(1)
-            logits = self.torch.nn.functional.interpolate(
-                logits,
-                size=(image.height, image.width),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze()
-            pivot = math.log(MASK_THRESHOLD / (1 - MASK_THRESHOLD))
-            alpha = self.torch.sigmoid((logits - pivot) * MASK_SLOPE).float().cpu()
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                if self.torch.cuda.is_available():
-                    self.torch.cuda.empty_cache()
-                raise WorkerOutOfMemory(
-                    "CLIPSeg inference exceeded accelerator memory; configure cpu fallback"
-                ) from exc
-            raise
+        logits = self._forward(image, prompt.strip()).unsqueeze(1)
+        logits = self.torch.nn.functional.interpolate(
+            logits,
+            size=(image.height, image.width),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze()
+        pivot = math.log(MASK_THRESHOLD / (1 - MASK_THRESHOLD))
+        alpha = self.torch.sigmoid((logits - pivot) * MASK_SLOPE).float().cpu()
         pixels = (alpha * 255).clamp(0, 255).byte().numpy().tobytes()
         from gimp_local_mcp.vision.artifacts import write_mask_png
 
@@ -259,7 +323,23 @@ class ClipSegRuntime:
             y0, y1 = int(ys.min()), int(ys.max())
             box = {"x": x0, "y": y0, "width": x1 - x0 + 1, "height": y1 - y0 + 1}
         runtime = time.perf_counter() - started
-        peak_vram = int(self.torch.cuda.max_memory_allocated(0)) if self.device == "cuda" else None
+        peak = self.memory.get("inference_peak", {})
+        provenance = {
+            "provider": "clipseg",
+            "model": MODEL_ID,
+            **(self.decision.as_dict() if self.decision else {}),
+            **self.diagnostics,
+            **self.evidence,
+            "memory": self.memory,
+            "model_load_seconds": self.load_seconds,
+            "self_test_seconds": self.self_test_seconds,
+            "inference_seconds": runtime,
+            "peak_cuda_allocated_bytes": peak.get("cuda_peak_allocated_bytes"),
+            "peak_cuda_reserved_bytes": peak.get("cuda_peak_reserved_bytes"),
+            "rss_peak_bytes": rss_peak_bytes(),
+            "placement_attempts": self.placement_attempts,
+            "oom_recovery_path": self.oom_recovery_path,
+        }
         return {
             "provider": "clipseg",
             "model": MODEL_ID,
@@ -278,7 +358,6 @@ class ClipSegRuntime:
                         "mask_slope": MASK_SLOPE,
                         "peak_activation": float(alpha.max()),
                         "mean_activation": float(alpha.mean()),
-                        "peak_vram_bytes": peak_vram,
                     },
                 }
             ],
@@ -291,16 +370,7 @@ class ClipSegRuntime:
                 if mode == "instance"
                 else []
             ),
-            "provenance": {
-                "provider": "clipseg",
-                "model": MODEL_ID,
-                "device": self.device,
-                "dtype": self.dtype,
-                "model_load_seconds": self.load_seconds,
-                "self_test_seconds": self.self_test_seconds,
-                "peak_vram_bytes": peak_vram,
-                "rss_peak_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
-            },
+            "provenance": provenance,
             "soft_alpha": True,
         }
 
@@ -337,7 +407,7 @@ def _response(runtime: ClipSegRuntime, request: dict[str, Any]) -> dict[str, Any
         }
     except WorkerOutOfMemory as exc:
         return _error(request_id, "oom", str(exc))
-    except WorkerUnavailable as exc:
+    except (WorkerUnavailable, PlacementError) as exc:
         return _error(request_id, "unavailable", str(exc))
     except (OSError, ValueError) as exc:
         return _error(request_id, "invalid-request", str(exc))
@@ -348,8 +418,8 @@ def _response(runtime: ClipSegRuntime, request: dict[str, Any]) -> dict[str, Any
 
 def _download_model() -> int:
     _torch, _image, model_type, processor_type = ClipSegRuntime()._import_dependencies()
-    processor_type.from_pretrained(MODEL_ID)
-    model_type.from_pretrained(MODEL_ID)
+    processor_type.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
+    model_type.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
     print(f"Downloaded CLIPSeg model into the local cache: {MODEL_ID}")
     return 0
 

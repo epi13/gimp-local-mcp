@@ -160,12 +160,14 @@ CUDA, Transformers, SAM, or model weights. A worker returns structured candidate
 grayscale PNG mask artifacts. Diagnostics go to worker stderr, while protocol traffic remains
 stdout-only.
 
-The demonstrated provider is CLIPSeg through `tools/vision/clipseg_worker.py`. It supports local
-free-text concept masks and fits CPU-only systems much better than SAM 3. It loads checkpoints with
-`local_files_only=True` during ordinary operation; downloading is a separate explicit setup step.
-The SAM 3 entry point remains diagnostic because this machine did not have a CUDA-enabled provider
-Python and only about 1.0–1.2 GiB of its 2 GiB Quadro P620 free while the desktop was active. SAM 3
-was not loaded or inferred, so the project makes no SAM 3 availability claim.
+CLIPSeg through `tools/vision/clipseg_worker.py` remains the lightweight fallback. It supports
+local free-text concept masks and fits CPU-only systems much better than SAM 3. It loads
+checkpoints with `local_files_only=True` during ordinary operation; downloading is a separate
+explicit setup step. `tools/vision/sam3_worker.py` is now an adapter for the official Meta SAM 3
+image API. It supports the official text and positive-box grounding paths, multiple scored masks,
+and boxes only after a real checkpoint self-test succeeds. Point prompting belongs to SAM 3's
+separate interactive predictor and is not claimed by this adapter. No normal request downloads a
+checkpoint.
 
 Create a separate provider environment; this does not change `pip install .`:
 
@@ -173,20 +175,61 @@ Create a separate provider environment; this does not change `pip install .`:
 python3.13 -m venv .venv-vision
 .venv-vision/bin/python -m pip install --upgrade pip
 .venv-vision/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-.venv-vision/bin/python -m pip install transformers pillow
+.venv-vision/bin/python -m pip install transformers accelerate pillow psutil
 .venv-vision/bin/python tools/vision/clipseg_worker.py --download-model
 
 export GIMP_MCP_VISION_PROVIDER=clipseg
 export GIMP_MCP_VISION_COMMAND="$PWD/.venv-vision/bin/python $PWD/tools/vision/clipseg_worker.py"
 export GIMP_MCP_VISION_DEVICE=auto
+export GIMP_MCP_VISION_OFFLOAD=auto
+export GIMP_MCP_VISION_GPU_RESERVE_MIB=256
+export GIMP_MCP_VISION_DTYPE=auto
 export GIMP_MCP_VISION_TIMEOUT=120
 gimp-local-mcp doctor
 ```
 
-`auto` uses CUDA only when provider Python reports CUDA and at least 1.5 GiB is free; otherwise it
-uses CPU. A typed OOM response leaves the document untouched. `doctor` separately reports
-`nvidia-smi` driver detection, provider Torch/CUDA visibility, device, GPU/compute capability,
-checkpoint presence, model-load success, provider self-test, and text-segmentation readiness.
+Device and offload are separate policies:
+
+- `GIMP_MCP_VISION_DEVICE=auto|cpu|cuda` chooses the execution device.
+- `GIMP_MCP_VISION_OFFLOAD=auto|none|sequential-cpu` controls weight placement.
+- `GIMP_MCP_VISION_GPU_RESERVE_MIB` preserves dynamic headroom from the free VRAM measured at
+  worker startup. `GIMP_MCP_VISION_MAX_VRAM_MIB` can impose an optional planning cap.
+- `GIMP_MCP_VISION_DTYPE=auto|float32|float16|bfloat16` accepts reduced precision only after a real
+  execution probe. AUTO remains FP32 on Pascal-class GPUs without Tensor Cores.
+
+AUTO first executes an actual CUDA matmul; discovery alone is insufficient. It subtracts the
+configured reserve from current free VRAM and uses full CUDA only when estimated model storage plus
+workspace fits. Otherwise it uses Hugging Face Accelerate's `cpu_offload` when the provider supports
+it, or CPU. Sequential CPU offload keeps primary parameter storage in **system RAM**, attaches
+layer-wise execution hooks, moves parameters to CUDA as their modules execute, and removes them
+after use. It lowers persistent VRAM residency but does not lower system-RAM requirements. Disk
+offload is a separate slower tradeoff and is intentionally not the default.
+
+AUTO has a bounded OOM path: full CUDA may retry sequential offload, then CPU; explicit device and
+offload selections fail instead of silently violating operator intent. Vision completes before any
+document mutation, so provider OOM cannot leave partial GIMP edits. `doctor` reports the placement
+reason, CUDA kernel probe and compiled architectures, startup free VRAM, reserve/budget, Torch
+allocated/reserved peaks, process RSS, and evidence from Accelerate hooks and persistent parameter
+devices. Torch allocator peaks and `nvidia-smi` process usage are different measurements.
+
+For an explicit official SAM 3 setup, install Meta's package according to its prerequisites, obtain
+access to the gated checkpoint, authenticate outside MCP, and run:
+
+```bash
+.venv-sam3/bin/python tools/vision/sam3_worker.py --download-checkpoint
+export GIMP_MCP_SAM3_CHECKPOINT=/absolute/path/printed/by/setup/sam3.1_multiplex.pt
+export GIMP_MCP_VISION_PROVIDER=sam3
+export GIMP_MCP_VISION_COMMAND="$PWD/.venv-sam3/bin/python $PWD/tools/vision/sam3_worker.py"
+```
+
+The worker passes `load_from_HF=False` to the official builder during normal operation and reports
+unavailable if the explicit file is absent. Use the bounded comparison command for one provider and
+input across placements:
+
+```bash
+python tools/vision/provider_check.py \
+  --benchmark cpu,full-cuda,sequential-cpu-offload,auto
+```
 
 `segment_subject(image_id, layer_id, prompt="red fox")` snapshots a duplicate of the current
 GIMP image to a uniquely named temporary PNG, invokes the local worker, validates candidate
@@ -211,15 +254,26 @@ complementary 128/127 artifact values read back near 188/187; after decoding to 
 sum was 1.0 within 0.005. Binary endpoints remained exact. This is reported as bridge behavior and
 is not described as learned matting.
 
-The current refinement boundary is `IdentityMaskRefiner`: provider alpha is retained, but this is
-not learned alpha matting. Coverage, border transparency, partial-alpha, edge-transition, and
-sampled bounding-box values are observable proxies only. The fox-on-snow benchmark has no
-ground-truth alpha matte, so confidence and proxy metrics must not be presented as accuracy.
+The current refinement boundary is `IdentityMaskRefiner`: provider output is retained, but this is
+not learned alpha matting. CLIPSeg emits a coarse semantic probability mask; SAM 3 emits binary
+segmentation masks. Semantic/object discovery, segmentation, optional future edge/alpha refinement,
+artifact validation, and GIMP mask creation remain distinct stages. Coverage, border transparency,
+partial-alpha, edge-transition, and sampled bounding-box values are observable proxies only. The
+fox-on-snow benchmark has no ground-truth alpha matte, so confidence and proxy metrics must not be
+presented as accuracy.
 
-On the 1280×960 fox benchmark, the cached CLIPSeg model reported about 603 MB of parameter storage.
-The cold development probe loaded in 12.66 seconds, inferred in 0.49 seconds on CPU, and peaked near
-1.04 GiB resident system memory. The resident worker avoids repeated model loads. Those figures are
-one-machine observations, not performance guarantees.
+On the prior 1280×960 fox benchmark, the cached CLIPSeg model reported about 603 MB of parameter
+storage and completed CPU inference in 0.49 seconds after a 12.66-second cold load. The new
+placement comparison used the same deterministic 32×32 image/prompt on the P620 with PyTorch
+2.7.1+cu126 and 128 MiB reserve. CPU/full-CUDA/sequential inference took 0.272/0.178/0.307 seconds.
+Full CUDA peaked at 660,646,912 allocated and 687,865,856 reserved bytes; sequential offload peaked
+at 131,516,416 allocated and 146,800,640 reserved bytes, an 80.1% lower allocated peak. The offload
+run had 233 hooks, 602,990,984 meta/CPU-backed parameter bytes, zero persistent CUDA parameter
+bytes, and `sequential_offload_verified=true`. Full CUDA retained all 602,990,984 parameter bytes on
+CUDA. Both CUDA placements produced identical masks; compared with CPU, mean absolute difference
+was 0.00098 on the 8-bit mask and maximum difference was one level. Sequential RSS was higher
+(about 1.71 GiB) because offload trades VRAM for system RAM. These are one-machine observations,
+not performance guarantees.
 
 For document navigation, start with `get_current_context`. It returns the open image IDs, a current-image snapshot when one can be established, the resolution source, and all selected layer IDs. GIMP 3 uses multi-layer selection, so `get_selected_layers` returns a list rather than inventing a single active layer. `get_layer_tree` recursively reports groups and children with stable IDs, parent IDs, positions, and bounded recursion/item limits. The Script-Fu server does not always expose a default-display context; when exactly one image is open, the service reports `single-open-image` as an explicit fallback, and it reports multiple open images as ambiguous instead of guessing.
 
@@ -270,9 +324,14 @@ See [SECURITY.md](SECURITY.md). In brief:
 - Independently prompted concept masks can overlap. The default and currently supported policy is
   `report`: layers retain their masks, overlap statistics are returned, and remainder background
   uses their soft union. No arbitrary first-concept ownership is imposed.
-- The Quadro P620 probe found compute capability 6.1 and 2 GiB total VRAM, with roughly 1.0–1.2 GiB
-  free under KDE/Wayland. The installed Torch 2.13 build was CPU-only. CLIPSeg was tested on CPU;
-  SAM 3 was researched but neither installed nor inferred on this hardware.
+- The Quadro P620 probe found compute capability 6.1 and 2 GiB total VRAM, with about 1.06 GiB free
+  under KDE/Wayland during this iteration. The official PyTorch 2.10+cu128 wheel discovered CUDA but
+  omitted `sm_61`, so its real kernel probe failed with `no kernel image`. PyTorch 2.7.1+cu126
+  includes `sm_60` and completed real FP32, FP16, and BF16 matmuls. Wheel architecture support must
+  be checked for this Pascal GPU; a newer version number is not evidence of compatibility.
+- Official SAM 3.1 requires gated checkpoint access. The adapter and explicit setup path are
+  implemented, but this run had no authenticated Hugging Face account or local checkpoint, so no
+  SAM inference or offload claim is made. Import success alone is not provider support.
 - `get_active_image` uses GIMP’s default display when the Script-Fu context provides one. If that helper is unavailable and exactly one image is open, it returns that image with the same documented single-image fallback used by `get_current_context`; multiple open images remain ambiguous.
 - Selected-layer control and recursive group inspection were validated against GIMP 3.2.0. The bridge rejects empty selection vectors, validates layer/image ownership, and reads selection state back after setting it.
 - Multi-call layer creation and duplication are grouped into one GIMP undo step. Additional composite operations should adopt the same internal helper as they are added.
@@ -285,8 +344,9 @@ See [SECURITY.md](SECURITY.md). In brief:
 4. Validate document context and multi-layer selection semantics against additional GIMP 3.x releases and multi-window setups.
 5. Add explicit export metadata policies and more file-format option models.
 6. Add safe, persistent capability caching with GIMP version invalidation.
-7. Compose a lightweight box/point segmenter with CLIPSeg when it measurably improves fine
-   boundaries and instance separation on constrained hardware.
+7. Validate official SAM 3.1 text, box, multi-instance, activation-memory, and Accelerate hook
+   behavior with an authorized local checkpoint; add provider-specific preload hooks only if the
+   measured module access pattern requires them.
 8. Add a local alpha-matting provider behind `MaskRefiner` when a supported lightweight runtime is
    available; keep semantic segmentation and matting evidence separate.
 9. Implement automatic object proposals with stable unlabeled candidate IDs, boxes, areas, and
