@@ -21,6 +21,9 @@ def test_server_uses_official_mcp_server_and_registers_tools() -> None:
         "get_layer_mask_info",
         "create_layer_mask",
         "set_layer_mask_enabled",
+        "vision_status",
+        "segment_subject",
+        "isolate_subject_vision",
         "isolate_subject",
     }.issubset(tools)
     assert "execute_scheme" not in tools

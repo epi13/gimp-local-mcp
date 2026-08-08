@@ -41,3 +41,19 @@ def test_export_does_not_fall_back_to_save(tmp_path: Path) -> None:
     service = GimpService.__new__(GimpService)
     with pytest.raises(ScriptFuError, match="safe gimp-file-export"):
         service._export(5, tmp_path / "preview.png")
+
+
+def test_vision_configuration_is_optional_and_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIMP_MCP_VISION_PROVIDER", "sam3")
+    monkeypatch.setenv("GIMP_MCP_VISION_COMMAND", "python tools/vision/sam3_worker.py")
+    config = Config.from_env()
+    config.validate()
+    assert config.vision_provider == "sam3"
+    assert config.vision_command == ("python", "tools/vision/sam3_worker.py")
+
+
+def test_vision_command_requires_a_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GIMP_MCP_VISION_PROVIDER", raising=False)
+    monkeypatch.setenv("GIMP_MCP_VISION_COMMAND", "python worker.py")
+    with pytest.raises(ConfigurationError, match="requires"):
+        Config.from_env().validate()

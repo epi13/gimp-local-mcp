@@ -8,6 +8,12 @@ GIMP Local MCP is intentionally powerful local automation. Treat the MCP host an
 - Non-loopback hosts are rejected unless `GIMP_MCP_ALLOW_REMOTE=true` is explicitly set.
 - The MCP server uses stdio. Normal logs go to stderr so stdout remains MCP protocol traffic.
 - There is no shell-command tool, arbitrary Python execution, raw Scheme execution tool, image upload, cloud editing, or image-generation integration.
+- Optional vision workers are a separate local trust boundary. Their command is read only from
+  trusted process configuration (`GIMP_MCP_VISION_COMMAND`), never from MCP request data, and is
+  launched without a shell. The worker protocol is bounded JSONL; diagnostics go to stderr and
+  mask artifacts must be lossless PNGs in a service-owned temporary directory.
+- Vision snapshots duplicate the requested GIMP image and save only the duplicate. Normal MCP
+  operation never downloads model weights and never sends user pixels to hosted inference.
 - The structured PDB gateway validates procedure identifiers and serializes values. User strings cannot become Scheme syntax.
 - Request and response bodies are bounded by the Script-Fu protocol’s 16-bit length and the configured response limit.
 
@@ -20,6 +26,11 @@ File-writing tools require an explicit path, normalize it, require an existing p
 GIMP’s Script-Fu server has no authentication in this bridge. A process that can access the listener can ask GIMP to manipulate files and images available to that GIMP session. Use loopback, OS account isolation, and normal filesystem permissions. Do not expose port 10008 to a network or container boundary without understanding that risk.
 
 The MCP host can request destructive image operations through the intended tools. Review client permissions and prompts accordingly.
+
+SAM 3, CUDA, model checkpoints, and any separately installed adapter remain operator-managed
+dependencies. Review upstream licenses, local filesystem permissions, checkpoint provenance, and
+process isolation. A provider's confidence is not proof of segmentation quality; this project does
+not claim a ground-truth result for the fox benchmark.
 
 ## Reporting issues
 
