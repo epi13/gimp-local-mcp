@@ -66,7 +66,13 @@ class GimpService:
         return {
             "gimp_version": _scalar(self.evaluate(scheme_call("gimp-version"))),
             "transport": "Script-Fu TCP",
-            "pdb_discovery": ["search", "exists", "procedure counts", "documentation"],
+            "pdb_discovery": [
+                "search",
+                "exists",
+                "procedure counts",
+                "documentation",
+                "typed metadata capability states",
+            ],
             "high_level_tools": [
                 "images",
                 "layers",
@@ -77,7 +83,8 @@ class GimpService:
             ],
             "limitations": [
                 "Active image selection depends on GIMP's default display.",
-                "PDB argument GParamSpec names are not yet exposed by Script-Fu.",
+                "The default Script-Fu adapter reports argument GParamSpec metadata as "
+                "unavailable; no signatures are guessed.",
                 "Export metadata options are left to GIMP's configured defaults in v0.1.",
             ],
         }

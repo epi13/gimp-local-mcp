@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added typed PDB parameter/return metadata models and explicit available, partial,
+  unavailable, and malformed introspection states.
+- Added conservative named-argument validation when a trusted metadata adapter reports
+  complete names and requiredness; the default Script-Fu path continues to report its
+  metadata limitation instead of guessing signatures.
+
 ## 0.1.0 — initial foundation
 
 - Added an official MCP Python SDK 2.x stdio server.

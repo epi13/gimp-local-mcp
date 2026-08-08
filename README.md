@@ -128,7 +128,7 @@ The current server registers 40 tools across these groups:
 - Adjustments and undo: `brightness_contrast`, `hue_saturation`, `desaturate`, `undo`, `redo`
 - PDB: `search_pdb`, `describe_pdb_procedure`, `invoke_pdb_procedure`
 
-`invoke_pdb_procedure` accepts JSON-compatible structured values, including `{ "scheme_symbol": "RGB" }` for a GIMP enum. It does not accept Scheme source, Python, shell commands, or arbitrary evaluation. Runtime PDB counts and documentation are used when available. GIMP 3’s Script-Fu binding does not yet provide a stable JSON representation of every `GParamSpec` argument name, so named-argument name validation is explicitly reported as incomplete rather than fabricated.
+`invoke_pdb_procedure` accepts JSON-compatible structured values, including `{ "scheme_symbol": "RGB" }` for a GIMP enum. It does not accept Scheme source, Python, shell commands, or arbitrary evaluation. Runtime PDB counts and documentation are used when available. Procedure descriptions now include a bounded typed-metadata state (`available`, `partial`, `unavailable`, or `malformed`) plus argument/return records when a trusted structured adapter reports them. The default Script-Fu TCP adapter reports argument metadata as unavailable because Script-Fu does not expose a stable `GimpProcedure`/`GParamSpec` representation; no signatures or types are guessed. Named-argument validation is performed only when trustworthy names are actually available.
 
 ## Example requests
 
@@ -139,7 +139,7 @@ The current server registers 40 tools across these groups:
 - “What layers are currently in this document?”
 - “Find a GIMP procedure capable of applying Gaussian blur and describe its arguments.”
 
-The final request is supported through PDB search and description; the current description reports procedure counts and documentation, while argument-level introspection remains a roadmap item.
+The final request is supported through PDB search and description; the current description reports procedure counts, documentation, and the explicit argument-metadata capability state. Rich argument records remain unavailable through the default Script-Fu bridge until a live, trustworthy adapter is available.
 
 ## Security model
 
@@ -163,7 +163,7 @@ See [SECURITY.md](SECURITY.md). In brief:
 ## Roadmap
 
 1. Validate the high-level vertical slices against GIMP 3.2+ on Linux, macOS, and Windows.
-2. Add a reliable PDB `GParamSpec` adapter for argument names, types, defaults, and enum choices.
+2. Validate a GIMP 3-compatible structured PDB metadata adapter for argument names, types, defaults, and enum choices; keep the explicit unavailable fallback when Script-Fu cannot provide it.
 3. Add structured non-destructive GEGL filter operations for brightness/contrast, levels, curves, hue/saturation, and Gaussian blur.
 4. Improve recursive group-layer inspection and image/layer selection semantics.
 5. Add explicit export metadata policies and more file-format option models.
