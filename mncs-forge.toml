@@ -1,0 +1,161 @@
+version = 1
+environment_allowlist = ["PATH", "LANG", "LC_ALL", "GIMP_MCP_HOST", "GIMP_MCP_PORT", "GIMP_MCP_TIMEOUT"]
+
+[project]
+name = "GIMP Local MCP development evidence"
+identity = "gimp-local-mcp-development-v1"
+root = "."
+
+[paths]
+candidates = ["src", "tests", "tools", "README.md", "CHANGELOG.md", "pyproject.toml", ".gitignore"]
+generated = [".mncs-forge/outputs"]
+contracts = []
+references = []
+evaluators = []
+acceptance_policies = ["forge-selection.json"]
+development_evidence = [".mncs-forge/outputs"]
+protected = ["AGENTS.md", "SECURITY.md", "mncs-forge.toml", "forge-selection.json"]
+outputs = [".mncs-forge/outputs"]
+
+[limits]
+timeout_seconds = 180
+output_bytes = 1048576
+
+[verifier_limits]
+max_batch = 8
+request_bytes = 65536
+batch_timeout_seconds = 180
+witness_bytes = 16384
+stderr_bytes = 4096
+result_bytes = 131072
+max_changed_paths = 64
+max_dependency_identities = 64
+max_question_parameters = 16
+
+[authority.development]
+may_write_candidates = false
+may_write_generated = true
+may_run_providers = true
+
+[authority.evaluator]
+candidate_read_only = true
+authority_read_only = true
+require_frozen_identities = true
+withhold_repair_feedback = true
+
+[policies]
+selection = "forge-selection.json"
+useful_benefit_objective = "README.md"
+
+[[providers]]
+id = "gimp-local-mcp-project-checks"
+name = "GIMP Local MCP project checks"
+identity = "gimp-local-mcp-project-checks-v1"
+version = "0.1"
+command = ["python", "tools/forge_provider.py"]
+transport = "stdio-jsonl"
+required = true
+capabilities = ["ruff-format", "ruff-check", "unit-tests", "live-gimp", "pip-check"]
+supported_constructs = ["fixed-command-semantic-parsing", "live-gimp-availability"]
+unsupported_constructs = ["arbitrary-commands", "whole-project-proof"]
+limitations = ["development evidence only; commands use the ambient project environment"]
+
+[[workflows]]
+name = "project-checks"
+category = "inspection"
+mode = "development"
+subject = "project"
+command = ["python", "tools/forge_provider.py"]
+provider_protocol = true
+provider_id = "gimp-local-mcp-project-checks"
+disclosure = "compact"
+
+[[verifiers]]
+id = "project.ruff-format"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "ruff-format"
+claim = "Ruff formatting verification completed without findings."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["This is a bounded local development check."]
+assumptions = ["the fixed Ruff command is the declared formatting check"]
+timeout_seconds = 30
+cost = "low"
+uncertainty_classes = ["formatting"]
+
+[[verifiers]]
+id = "project.ruff-check"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "ruff-check"
+claim = "Ruff lint verification completed without findings."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["This is a bounded local development check."]
+assumptions = ["the fixed Ruff command is the declared lint check"]
+timeout_seconds = 30
+cost = "low"
+uncertainty_classes = ["linting"]
+
+[[verifiers]]
+id = "project.unit-tests"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "unit-tests"
+claim = "The repository unit test suite completed without failures."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "tests"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["A passing bounded test suite is development evidence, not an independent proof."]
+assumptions = ["pytest output contains a decisive passing summary"]
+timeout_seconds = 60
+cost = "medium"
+uncertainty_classes = ["test-failure"]
+
+[[verifiers]]
+id = "project.live-gimp"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "live-gimp"
+claim = "The configured local GIMP Script-Fu server responded and the bounded live integration workflow completed successfully."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "integration"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["A skipped or unavailable GIMP integration is UNKNOWN, never PASS."]
+assumptions = ["the configured loopback Script-Fu endpoint is the GIMP under test"]
+timeout_seconds = 120
+cost = "high"
+uncertainty_classes = ["live-dependency"]
+
+[[verifiers]]
+id = "project.pip-check"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "pip-check"
+claim = "Python dependency verification found no broken requirements."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "environment"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["This reports the current Python environment only."]
+assumptions = ["pip check output is the dependency verifier's declared result"]
+timeout_seconds = 30
+cost = "low"
+uncertainty_classes = ["dependency-drift"]

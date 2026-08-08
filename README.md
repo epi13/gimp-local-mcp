@@ -26,6 +26,7 @@ gimp-local-mcp
   ergonomic tools ---> GimpService ---> safe Scheme serializer
                               |                  |
                               +--> PDB catalog/invoker
+                              +--> structured GEGL filter gateway
                                                    |
                                                    v
                                     Script-Fu TCP framing (127.0.0.1:10008)
@@ -118,7 +119,7 @@ Remote connections are rejected unless `GIMP_MCP_ALLOW_REMOTE=true` is set. Loca
 
 ## MCP tools
 
-The current server registers 40 tools across these groups:
+The current server registers 43 tools across these groups:
 
 - Session: `gimp_status`, `gimp_capabilities`, `list_open_images`, `get_active_image`, `get_image_info`
 - Files and images: `open_image`, `create_image`, `save_xcf`, `export_image`, `close_image`
@@ -126,9 +127,12 @@ The current server registers 40 tools across these groups:
 - Transforms: `resize_image`, `resize_canvas`, `crop_image`, `rotate_image`, `flip_image`
 - Selection: `select_all`, `select_none`, `invert_selection`, `select_rectangle`, `select_ellipse`, `select_layer_alpha`
 - Adjustments and undo: `brightness_contrast`, `hue_saturation`, `desaturate`, `undo`, `redo`
+- Non-destructive filters: `apply_gaussian_blur_filter`, `apply_brightness_contrast_filter`, `list_drawable_filters`
 - PDB: `search_pdb`, `describe_pdb_procedure`, `invoke_pdb_procedure`
 
 `invoke_pdb_procedure` accepts JSON-compatible structured values, including `{ "scheme_symbol": "RGB" }` for a GIMP enum. It does not accept Scheme source, Python, shell commands, or arbitrary evaluation. Runtime PDB counts and documentation are used when available. Procedure descriptions now include a bounded typed-metadata state (`available`, `partial`, `unavailable`, or `malformed`) plus argument/return records when a trusted structured adapter reports them. The default Script-Fu TCP adapter reports argument metadata as unavailable because Script-Fu does not expose a stable `GimpProcedure`/`GParamSpec` representation; no signatures or types are guessed. Named-argument validation is performed only when trustworthy names are actually available.
+
+GIMP 3 also exposes non-destructive drawable filters through special Script-Fu bindings rather than ordinary PDB procedures. The filter gateway uses the documented `gimp-drawable-append-new-filter` binding with structured named GEGL properties, then reads the actual filter ID and state back through GIMP. The current high-level slices are Gaussian blur and brightness/contrast; they preserve the existing destructive adjustment tool names.
 
 ## Example requests
 
@@ -154,17 +158,18 @@ See [SECURITY.md](SECURITY.md). In brief:
 
 ## Limitations
 
-- A live GIMP 3 installation is not available in this development environment, so integration tests are skipped here.
+- Live validation in this iteration used a loopback GIMP 3.2.0 Script-Fu server at `127.0.0.1:10008`. Other GIMP 3 versions still need compatibility validation.
+- On the tested GIMP 3.2.0 Script-Fu environment, the legacy `gimp-pdb-query` and `gimp-pdb-proc-exists` helper bindings are unavailable. The typed PDB adapter therefore retains its explicit unavailable fallback; the filter bindings are validated independently. A future bridge adapter should use a supported GIMP-side PDB or GObject-introspection channel rather than guessing signatures.
 - Export metadata behavior uses GIMP’s configured defaults in v0.1; no hidden metadata is added or removed.
-- The initial adjustment tools call stable legacy PDB adjustment procedures that GIMP 3.2 marks deprecated in favor of non-destructive filters. Structured filter configuration is a high-value follow-up.
+- The initial adjustment tools call stable legacy PDB adjustment procedures that GIMP 3.2 marks deprecated in favor of non-destructive filters. Only brightness/contrast and Gaussian blur have non-destructive high-level slices so far.
 - `get_active_image` uses GIMP’s default display; explicit image IDs are more reliable for multi-window workflows.
 - Multi-call layer creation and duplication are grouped into one GIMP undo step. Additional composite operations should adopt the same internal helper as they are added.
 
 ## Roadmap
 
-1. Validate the high-level vertical slices against GIMP 3.2+ on Linux, macOS, and Windows.
-2. Validate a GIMP 3-compatible structured PDB metadata adapter for argument names, types, defaults, and enum choices; keep the explicit unavailable fallback when Script-Fu cannot provide it.
-3. Add structured non-destructive GEGL filter operations for brightness/contrast, levels, curves, hue/saturation, and Gaussian blur.
+1. Validate the high-level vertical slices against additional GIMP 3.x releases and platforms.
+2. Add a supported GIMP-side structured PDB metadata adapter for argument names, types, defaults, and enum choices; keep the explicit unavailable fallback when the bridge cannot provide it.
+3. Add structured non-destructive GEGL filter operations for levels, curves, and hue/saturation.
 4. Improve recursive group-layer inspection and image/layer selection semantics.
 5. Add explicit export metadata policies and more file-format option models.
 6. Add safe, persistent capability caching with GIMP version invalidation.
@@ -178,3 +183,10 @@ pytest -q
 ```
 
 Live tests are marked `integration` and skip when `127.0.0.1:10008` is unavailable. See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for repository invariants.
+
+## Forge development evidence
+
+The committed `mncs-forge.toml` declares a project-owned Provider Protocol 0.1 provider in
+`tools/forge_provider.py`. It parses fixed Ruff, pytest, pip, and live-GIMP checks into explicit
+PASS/FAIL/UNKNOWN responses. In particular, a skipped live integration test is UNKNOWN. Forge
+runtime ledgers and `.mncs-forge/` state remain local and are intentionally not committed.

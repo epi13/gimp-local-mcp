@@ -1,0 +1,9 @@
+{
+  "required": [
+    "project.ruff-format",
+    "project.ruff-check",
+    "project.unit-tests",
+    "project.live-gimp",
+    "project.pip-check"
+  ]
+}

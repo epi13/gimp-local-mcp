@@ -275,6 +275,55 @@ def brightness_contrast(layer_id: int, brightness: float, contrast: float) -> di
 
 
 @mcp.tool()
+def apply_gaussian_blur_filter(
+    layer_id: int,
+    radius_x: float,
+    radius_y: float | None = None,
+    name: str = "Gaussian Blur",
+    opacity: float = 100.0,
+    blend_mode: str = "LAYER-MODE-REPLACE",
+) -> dict[str, Any]:
+    """Add a non-destructive Gaussian blur GEGL filter to a layer."""
+
+    return _service.apply_gaussian_blur_filter(
+        layer_id,
+        radius_x,
+        radius_y,
+        name=name,
+        opacity=opacity,
+        blend_mode=blend_mode,
+    )
+
+
+@mcp.tool()
+def apply_brightness_contrast_filter(
+    layer_id: int,
+    brightness: float,
+    contrast: float,
+    name: str = "Brightness / Contrast",
+    opacity: float = 100.0,
+    blend_mode: str = "LAYER-MODE-REPLACE",
+) -> dict[str, Any]:
+    """Add a non-destructive GEGL brightness/contrast filter to a layer."""
+
+    return _service.apply_brightness_contrast_filter(
+        layer_id,
+        brightness,
+        contrast,
+        name=name,
+        opacity=opacity,
+        blend_mode=blend_mode,
+    )
+
+
+@mcp.tool()
+def list_drawable_filters(layer_id: int) -> list[dict[str, Any]]:
+    """List non-destructive filters GIMP reports on a layer."""
+
+    return _service.list_drawable_filters(layer_id)
+
+
+@mcp.tool()
 def hue_saturation(
     layer_id: int, hue: float, saturation: float, lightness: float
 ) -> dict[str, Any]:

@@ -45,6 +45,14 @@ def test_scheme_string_and_structured_call_escape_untrusted_text() -> None:
         scheme_call("plug-in-test", keywords={"value": {"scheme_symbol": "RGB"}})
         == "(plug-in-test #:value RGB)"
     )
+    assert scheme_call(
+        "gimp-drawable-append-new-filter",
+        [12, "gegl:gaussian-blur", "Blur", {"scheme_symbol": "LAYER-MODE-REPLACE"}, 1.0],
+        keywords={"std-dev-x": 2.0},
+    ) == (
+        '(gimp-drawable-append-new-filter 12 "gegl:gaussian-blur" "Blur" '
+        "LAYER-MODE-REPLACE 1 #:std-dev-x 2)"
+    )
 
 
 def test_procedure_names_are_restricted() -> None:
