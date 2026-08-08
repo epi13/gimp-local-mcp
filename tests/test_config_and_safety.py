@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from gimp_local_mcp.config import Config
+from gimp_local_mcp.errors import ConfigurationError, PathPolicyError
+from gimp_local_mcp.service import GimpService
+
+
+def test_default_config_is_localhost() -> None:
+    config = Config.from_env()
+    config.validate()
+    assert config.host == "127.0.0.1"
+    assert config.port == 10008
+    assert config.allow_remote is False
+
+
+def test_remote_host_requires_explicit_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIMP_MCP_HOST", "192.0.2.1")
+    with pytest.raises(ConfigurationError):
+        Config.from_env().validate()
+    monkeypatch.setenv("GIMP_MCP_ALLOW_REMOTE", "true")
+    Config.from_env().validate()
+
+
+def test_output_policy_requires_existing_parent_and_explicit_overwrite(tmp_path: Path) -> None:
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"not touched")
+    with pytest.raises(PathPolicyError):
+        GimpService._output_file(str(existing), overwrite=False)
+    assert GimpService._output_file(str(existing), overwrite=True) == existing.resolve()
+    with pytest.raises(PathPolicyError):
+        GimpService._output_file(str(tmp_path / "missing" / "new.png"), overwrite=True)
