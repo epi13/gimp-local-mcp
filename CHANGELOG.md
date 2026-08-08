@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added bounded CLIPSeg soft-mask threshold and slope worker settings, preserving existing defaults
+  while allowing general-purpose control over weak surrounding regions and transition firmness.
 - Added a reusable Torch vision runtime with measured CPU, full-CUDA, and true Accelerate
   sequential-CPU-offload placement; dynamic free-VRAM reserve/cap policy; probed dtype selection;
   allocator/RSS/hook residency evidence; and bounded AUTO CUDA-OOM recovery.

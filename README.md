@@ -188,6 +188,13 @@ export GIMP_MCP_VISION_TIMEOUT=120
 gimp-local-mcp doctor
 ```
 
+CLIPSeg converts its coarse semantic logits into a soft mask with conservative defaults of `0.2`
+for the probability threshold and `2.0` for the sigmoid slope. Operators can tune those generic
+controls with `GIMP_MCP_CLIPSEG_MASK_THRESHOLD` (`0.01`–`0.99`) and
+`GIMP_MCP_CLIPSEG_MASK_SLOPE` (`0.25`–`8.0`). Higher thresholds reject weaker surrounding
+regions; higher slopes make the transition firmer. These settings refine a semantic mask but do
+not turn it into a fur/hair alpha matte.
+
 Device and offload are separate policies:
 
 - `GIMP_MCP_VISION_DEVICE=auto|cpu|cuda` chooses the execution device.
