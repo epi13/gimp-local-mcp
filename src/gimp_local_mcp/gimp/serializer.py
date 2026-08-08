@@ -98,19 +98,15 @@ def scheme_call(
     *,
     keywords: Mapping[str, Any] | None = None,
 ) -> str:
-    """Build a positional or all-keyword PDB invocation."""
+    """Build a positional, named, or mixed positional/named PDB invocation."""
 
     name = validate_procedure_name(procedure)
-    if args and keywords:
-        raise ValueError("A Scheme call cannot mix positional and keyword arguments")
+    parts = [scheme_value(value) for value in args]
     if keywords:
-        parts: list[str] = []
         for key, value in keywords.items():
             if not _SYMBOL_RE.fullmatch(key):
                 raise ValueError(f"Invalid PDB argument name: {key!r}")
             parts.extend([f"#:{key}", scheme_value(value)])
-    else:
-        parts = [scheme_value(value) for value in args]
     return "(" + " ".join([name, *parts]) + ")"
 
 

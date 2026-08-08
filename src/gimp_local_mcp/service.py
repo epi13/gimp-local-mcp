@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import Config
 from .errors import PathPolicyError, UnsafeOperationError
+from .gimp.filters import DrawableFilterGateway, DrawableFilterSpec
 from .gimp.pdb import PdbCatalog, PdbInvoker
 from .gimp.scheme import parse_scheme, unwrap
 from .gimp.serializer import SchemeNull, SchemeSymbol, scheme_call, with_v3
@@ -42,6 +43,7 @@ class GimpService:
         self.client = ScriptFuClient(self.config)
         self.catalog = PdbCatalog(self.client)
         self.pdb = PdbInvoker(self.client, self.catalog)
+        self.filters = DrawableFilterGateway(self.evaluate)
 
     def close(self) -> None:
         self.client.close()
@@ -80,6 +82,7 @@ class GimpService:
                 "selections",
                 "undo",
                 "basic adjustments",
+                "non-destructive GEGL filters",
             ],
             "limitations": [
                 "Active image selection depends on GIMP's default display.",
@@ -416,6 +419,57 @@ class GimpService:
         )
         return {"layer_id": layer_id, "brightness": brightness, "contrast": contrast}
 
+    def apply_gaussian_blur_filter(
+        self,
+        layer_id: int,
+        radius_x: float,
+        radius_y: float | None = None,
+        *,
+        name: str = "Gaussian Blur",
+        opacity: float = 100.0,
+        blend_mode: str = "LAYER-MODE-REPLACE",
+    ) -> dict[str, Any]:
+        self._id(layer_id, "layer_id")
+        radius_y = radius_x if radius_y is None else radius_y
+        self._finite_range(radius_x, 0, 1000, "radius_x")
+        self._finite_range(radius_y, 0, 1000, "radius_y")
+        spec = DrawableFilterSpec.create(
+            layer_id,
+            "gegl:gaussian-blur",
+            name,
+            blend_mode=blend_mode,
+            opacity=opacity,
+            parameters={"std-dev-x": radius_x, "std-dev-y": radius_y},
+        )
+        return self.filters.append(spec).as_dict()
+
+    def apply_brightness_contrast_filter(
+        self,
+        layer_id: int,
+        brightness: float,
+        contrast: float,
+        *,
+        name: str = "Brightness / Contrast",
+        opacity: float = 100.0,
+        blend_mode: str = "LAYER-MODE-REPLACE",
+    ) -> dict[str, Any]:
+        self._id(layer_id, "layer_id")
+        self._finite_range(brightness, -1, 1, "brightness")
+        self._finite_range(contrast, -1, 1, "contrast")
+        spec = DrawableFilterSpec.create(
+            layer_id,
+            "gegl:brightness-contrast",
+            name,
+            blend_mode=blend_mode,
+            opacity=opacity,
+            parameters={"brightness": brightness, "contrast": contrast},
+        )
+        return self.filters.append(spec).as_dict()
+
+    def list_drawable_filters(self, layer_id: int) -> list[dict[str, Any]]:
+        self._id(layer_id, "layer_id")
+        return [item.as_dict() for item in self.filters.list(layer_id)]
+
     def hue_saturation(
         self, layer_id: int, hue: float, saturation: float, lightness: float
     ) -> dict[str, Any]:
@@ -486,6 +540,18 @@ class GimpService:
     def _size(width: int, height: int) -> None:
         if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
             raise ValueError("Width and height must be positive integers")
+
+    @staticmethod
+    def _finite_range(value: float, minimum: float, maximum: float, name: str) -> None:
+        import math
+
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or not minimum <= float(value) <= maximum
+        ):
+            raise ValueError(f"{name} must be a finite number from {minimum} to {maximum}")
 
     @staticmethod
     def _existing_file(path: str) -> Path:

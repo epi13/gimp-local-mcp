@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added a reusable structured non-destructive drawable-filter gateway with Gaussian blur and
+  brightness/contrast MCP tools, bounded GEGL parameters, filter identity/state inspection, and
+  live GIMP integration coverage.
+- Added a committed MNCS Forge project configuration and Provider Protocol checks that distinguish
+  semantic PASS, FAIL, and unavailable/ skipped UNKNOWN results.
+- Recorded live compatibility findings for GIMP 3.2.0: documented drawable-filter bindings work,
+  while legacy Script-Fu PDB query helper bindings are not exposed in the tested environment.
 - Added typed PDB parameter/return metadata models and explicit available, partial,
   unavailable, and malformed introspection states.
 - Added conservative named-argument validation when a trusted metadata adapter reports

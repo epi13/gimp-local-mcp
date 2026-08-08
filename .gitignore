@@ -9,3 +9,4 @@ build/
 workspace/
 .coverage
 htmlcov/
+.mncs-forge/
