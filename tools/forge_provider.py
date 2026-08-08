@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -59,6 +60,9 @@ def _response(
 
 
 def _run(method: str) -> tuple[int, str, str] | None:
+    environment = os.environ.copy()
+    # Forge hashes the declared candidate scope; test bytecode must not mutate it.
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         result = subprocess.run(
             _COMMANDS[method],
@@ -67,6 +71,7 @@ def _run(method: str) -> tuple[int, str, str] | None:
             text=True,
             timeout=120,
             check=False,
+            env=environment,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None

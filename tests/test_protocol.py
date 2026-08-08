@@ -4,9 +4,17 @@ import pytest
 
 from gimp_local_mcp.errors import ProcedureNameError, ProtocolError
 from gimp_local_mcp.gimp.protocol import decode_request, decode_response_header, encode_request
-from gimp_local_mcp.gimp.scheme import SchemeOpaque, SchemeVector, parse_scheme, unwrap
+from gimp_local_mcp.gimp.scheme import (
+    SchemeOpaque,
+    parse_scheme,
+    unwrap,
+)
+from gimp_local_mcp.gimp.scheme import (
+    SchemeVector as ParsedSchemeVector,
+)
 from gimp_local_mcp.gimp.serializer import (
     SchemeNull,
+    SchemeVector,
     scheme_call,
     scheme_path,
     scheme_string,
@@ -37,6 +45,7 @@ def test_scheme_string_and_structured_call_escape_untrusted_text() -> None:
     assert scheme_string('a"b\\c\n') == '"a\\"b\\\\c\\n"'
     assert scheme_path(__import__("pathlib").Path('/tmp/a"b')) == '"/tmp/a\\"b"'
     assert scheme_value(SchemeNull()) == "-1"
+    assert scheme_value(SchemeVector((12, 13))) == "#(12 13)"
     assert (
         scheme_call("gimp-item-set-name", [12, 'a") (display "oops")'])
         == '(gimp-item-set-name 12 "a\\") (display \\"oops\\")")'
@@ -64,6 +73,6 @@ def test_procedure_names_are_restricted() -> None:
 def test_scheme_reader_supports_gimp_v3_values() -> None:
     parsed = parse_scheme('(12 #t "hello\\nworld" #(3 -1) #<GimpImage>)')
     assert unwrap(parsed[:3]) == [12, True, "hello\nworld"]
-    assert isinstance(parsed[3], SchemeVector)
+    assert isinstance(parsed[3], ParsedSchemeVector)
     assert unwrap(parsed[3]) == [3, -1]
     assert isinstance(parsed[4], SchemeOpaque)
