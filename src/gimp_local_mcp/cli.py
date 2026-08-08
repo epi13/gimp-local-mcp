@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import logging
 import platform
+import shutil
+import subprocess
 import sys
 
 from . import __version__
@@ -28,6 +30,25 @@ def _doctor() -> int:
         config = Config.from_env()
         config.validate()
         print(f"Python: {platform.python_version()} ({platform.python_implementation()})")
+        nvidia_smi = shutil.which("nvidia-smi")
+        if nvidia_smi is None:
+            print("NVIDIA driver: not detected (nvidia-smi is unavailable)")
+        else:
+            probe = subprocess.run(
+                [
+                    nvidia_smi,
+                    "--query-gpu=name,driver_version,memory.total,memory.used,memory.free,compute_cap",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if probe.returncode == 0 and probe.stdout.strip():
+                print(f"NVIDIA driver: detected; {probe.stdout.strip()}")
+            else:
+                print("NVIDIA driver: nvidia-smi failed; CUDA is not established")
         print(
             f"Configured GIMP Script-Fu: {config.host}:{config.port} (timeout {config.timeout:g}s)"
         )
@@ -39,8 +60,8 @@ def _doctor() -> int:
 
         service = GimpService(config)
         try:
-            status = service.status()
             vision = service.vision_status()
+            status = service.status()
         finally:
             service.close()
         print(
@@ -52,8 +73,24 @@ def _doctor() -> int:
             f"({'available' if vision['available'] else 'unavailable'})"
             + (f"; {vision['reason']}" if vision.get("reason") else "")
         )
+        print(
+            "Provider runtime: "
+            f"torch={vision.get('torch_version') or 'not reported'}; "
+            f"torch CUDA={vision.get('torch_cuda_version') or 'none'}; "
+            f"CUDA available={vision.get('cuda_available')}; "
+            f"device={vision.get('device') or 'none'}; "
+            f"GPU={vision.get('gpu_name') or 'none'}; "
+            f"compute capability={vision.get('compute_capability') or 'none'}"
+        )
+        print(
+            "Provider readiness: "
+            f"checkpoint={vision.get('checkpoint_available')}; "
+            f"model load={vision.get('model_load_success')}; "
+            f"test inference={vision.get('test_inference_success')}; "
+            f"text segmentation={vision.get('text_segmentation')}"
+        )
         return 0
-    except (GimpMcpError, OSError) as exc:
+    except (GimpMcpError, OSError, subprocess.SubprocessError) as exc:
         print(f"Script-Fu: unavailable or misconfigured: {exc}", file=sys.stderr)
         return 1
 

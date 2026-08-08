@@ -4,9 +4,14 @@
     "project.ruff-check",
     "project.unit-tests",
     "project.vision-unit-tests",
+    "project.layer-decomposition-tests",
     "project.live-gimp",
     "project.live-subject-isolation",
     "project.live-vision-bridge",
+    "project.live-layer-decomposition",
+    "project.vision-provider-status",
+    "project.semantic-inference",
+    "project.semantic-quality-uncertainty",
     "project.pip-check"
   ]
 }

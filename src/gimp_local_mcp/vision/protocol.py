@@ -25,6 +25,10 @@ class VisionWorkerError(GimpMcpError, RuntimeError):
     """A configured worker failed without producing a valid response."""
 
 
+class VisionOutOfMemoryError(VisionWorkerError):
+    """The provider could not satisfy a request within accelerator memory."""
+
+
 def _request_id() -> str:
     return uuid.uuid4().hex
 
@@ -85,6 +89,8 @@ def decode_segmentation(message: dict[str, Any]) -> SegmentationResult:
         error = str(message.get("error", "vision worker error"))[:1024]
         if code == "unavailable":
             raise VisionUnavailableError(error)
+        if code == "oom":
+            raise VisionOutOfMemoryError(error)
         raise VisionWorkerError(error)
     if message.get("type") != "segmentation_response":
         raise VisionProtocolError("expected segmentation_response")

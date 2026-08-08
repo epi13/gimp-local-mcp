@@ -115,22 +115,23 @@ Defaults work with a standard local GIMP setup:
 | `GIMP_MCP_LOG_LEVEL` | `INFO` | stderr log level |
 | `GIMP_MCP_MAX_RESPONSE_BYTES` | `65535` | bounded response body size |
 | `GIMP_MCP_ALLOW_REMOTE` | `false` | explicit opt-in for non-loopback hosts |
-| `GIMP_MCP_VISION_PROVIDER` | `none` | optional trusted local provider name, such as `sam3` |
+| `GIMP_MCP_VISION_PROVIDER` | `none` | optional trusted local provider name, such as `clipseg` |
 | `GIMP_MCP_VISION_COMMAND` | unset | trusted local worker command; never an MCP argument |
 | `GIMP_MCP_VISION_TIMEOUT` | `60` | local worker response timeout in seconds, capped at 600 |
+| `GIMP_MCP_VISION_DEVICE` | `auto` | provider device policy: `auto`, `cpu`, or `cuda` |
 
 Remote connections are rejected unless `GIMP_MCP_ALLOW_REMOTE=true` is set. Localhost-only operation is the secure default.
 
 ## MCP tools
 
-The current server registers 55 tools across these groups:
+The current server registers 57 tools across these groups:
 
 - Session: `gimp_status`, `gimp_capabilities`, `list_open_images`, `get_active_image`, `get_current_context`, `get_image_info`
 - Files and images: `open_image`, `create_image`, `save_xcf`, `export_image`, `close_image`
 - Layers: `list_layers`, `get_layer_tree`, `get_layer_info`, `get_selected_layers`, `set_selected_layers`, `create_layer`, `create_layer_group`, `duplicate_layer`, `rename_layer`, `delete_layer`, `set_layer_visibility`, `set_layer_opacity`, `set_layer_mode`, `move_layer`, `merge_down`
 - Transforms: `resize_image`, `resize_canvas`, `crop_image`, `rotate_image`, `flip_image`
 - Selection: `select_all`, `select_none`, `invert_selection`, `select_rectangle`, `select_ellipse`, `select_layer_alpha`
-- Masks and subject isolation: `get_layer_mask_info`, `create_layer_mask`, `set_layer_mask_enabled`, `isolate_subject`, `isolate_subject_vision`
+- Masks and subject isolation: `get_layer_mask_info`, `create_layer_mask`, `set_layer_mask_enabled`, `isolate_subject`, `isolate_subject_vision`, `separate_subject_to_layers`, `separate_concepts_to_layers`
 - Optional local vision: `vision_status`, `segment_subject`
 - Adjustments and undo: `brightness_contrast`, `hue_saturation`, `desaturate`, `undo`, `redo`
 - Non-destructive filters: `apply_gaussian_blur_filter`, `apply_brightness_contrast_filter`, `list_drawable_filters`
@@ -159,10 +160,33 @@ CUDA, Transformers, SAM, or model weights. A worker returns structured candidate
 grayscale PNG mask artifacts. Diagnostics go to worker stderr, while protocol traffic remains
 stdout-only.
 
-The preferred future provider is Meta SAM 3, represented by `tools/vision/sam3_worker.py`. It
-reports `unavailable` unless a separately installed, audited SAM 3 environment and adapter are
-supplied. No weights are downloaded by normal MCP operation, and no image is sent to hosted
-inference. `vision_status` reports this state honestly.
+The demonstrated provider is CLIPSeg through `tools/vision/clipseg_worker.py`. It supports local
+free-text concept masks and fits CPU-only systems much better than SAM 3. It loads checkpoints with
+`local_files_only=True` during ordinary operation; downloading is a separate explicit setup step.
+The SAM 3 entry point remains diagnostic because this machine did not have a CUDA-enabled provider
+Python and only about 1.0–1.2 GiB of its 2 GiB Quadro P620 free while the desktop was active. SAM 3
+was not loaded or inferred, so the project makes no SAM 3 availability claim.
+
+Create a separate provider environment; this does not change `pip install .`:
+
+```bash
+python3.13 -m venv .venv-vision
+.venv-vision/bin/python -m pip install --upgrade pip
+.venv-vision/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+.venv-vision/bin/python -m pip install transformers pillow
+.venv-vision/bin/python tools/vision/clipseg_worker.py --download-model
+
+export GIMP_MCP_VISION_PROVIDER=clipseg
+export GIMP_MCP_VISION_COMMAND="$PWD/.venv-vision/bin/python $PWD/tools/vision/clipseg_worker.py"
+export GIMP_MCP_VISION_DEVICE=auto
+export GIMP_MCP_VISION_TIMEOUT=120
+gimp-local-mcp doctor
+```
+
+`auto` uses CUDA only when provider Python reports CUDA and at least 1.5 GiB is free; otherwise it
+uses CPU. A typed OOM response leaves the document untouched. `doctor` separately reports
+`nvidia-smi` driver detection, provider Torch/CUDA visibility, device, GPU/compute capability,
+checkpoint presence, model-load success, provider self-test, and text-segmentation readiness.
 
 `segment_subject(image_id, layer_id, prompt="red fox")` snapshots a duplicate of the current
 GIMP image to a uniquely named temporary PNG, invokes the local worker, validates candidate
@@ -173,10 +197,29 @@ existing layer-mask gateway. `isolate_subject(strategy="auto", prompt="red fox")
 capable semantic worker and falls back to the existing high-key contiguous-color strategy when no
 provider is available. Explicit `high-key-background` and `border-color` retain the heuristic.
 
+`separate_subject_to_layers(image_id, layer_id, prompt="red fox")` leaves a persistent group with
+`Subject — red fox` and `Background`, hides but does not modify the original source, and selects the
+subject layer. The background mask is the exact 8-bit complement of the subject/foreground-union
+artifact; both layers use duplicates of the source. `separate_concepts_to_layers` accepts up to
+eight concepts, preserves distinct provider instances when returned, bounds the total generated
+layers to 24, reports mask overlap without assigning ownership, and derives the remainder from the
+soft-alpha foreground union. Provider failures happen before GIMP mutation; mask-import failures
+roll back generated layers, the group, source visibility, and selected-layer state.
+
+GIMP 3.2 stores imported partial mask samples in its image-space encoding. In live validation,
+complementary 128/127 artifact values read back near 188/187; after decoding to linear alpha their
+sum was 1.0 within 0.005. Binary endpoints remained exact. This is reported as bridge behavior and
+is not described as learned matting.
+
 The current refinement boundary is `IdentityMaskRefiner`: provider alpha is retained, but this is
 not learned alpha matting. Coverage, border transparency, partial-alpha, edge-transition, and
 sampled bounding-box values are observable proxies only. The fox-on-snow benchmark has no
 ground-truth alpha matte, so confidence and proxy metrics must not be presented as accuracy.
+
+On the 1280×960 fox benchmark, the cached CLIPSeg model reported about 603 MB of parameter storage.
+The cold development probe loaded in 12.66 seconds, inferred in 0.49 seconds on CPU, and peaked near
+1.04 GiB resident system memory. The resident worker avoids repeated model loads. Those figures are
+one-machine observations, not performance guarantees.
 
 For document navigation, start with `get_current_context`. It returns the open image IDs, a current-image snapshot when one can be established, the resolution source, and all selected layer IDs. GIMP 3 uses multi-layer selection, so `get_selected_layers` returns a list rather than inventing a single active layer. `get_layer_tree` recursively reports groups and children with stable IDs, parent IDs, positions, and bounded recursion/item limits. The Script-Fu server does not always expose a default-display context; when exactly one image is open, the service reports `single-open-image` as an explicit fallback, and it reports multiple open images as ambiguous instead of guessing.
 
@@ -187,6 +230,8 @@ For document navigation, start with `get_current_context`. It returns the open i
 - “Resize this to 2048 pixels wide while preserving aspect ratio.”
 - “Export a JPEG copy at this path without overwriting anything.”
 - “What layers are currently in this document?”
+- “Separate the red fox from the background and leave both on editable layers.”
+- “Separate the fox, trees, and snowbank into layers and report any overlap.”
 - “Find a GIMP procedure capable of applying Gaussian blur and describe its arguments.”
 
 The final request is supported through PDB search and description; the current description reports procedure counts, documentation, and the explicit argument-metadata capability state. Rich argument records remain unavailable through the default Script-Fu bridge until a live, trustworthy adapter is available.
@@ -204,23 +249,30 @@ See [SECURITY.md](SECURITY.md). In brief:
 
 ## Limitations
 
-- Live validation in this iteration used a loopback GIMP 3.2.0 Script-Fu server at `127.0.0.1:10009` (the repository default remains `10008`). Other GIMP 3 versions still need compatibility validation.
+- Live validation in this iteration used GIMP 3.2.0 on the default loopback endpoint
+  `127.0.0.1:10008`. Other GIMP 3 versions still need compatibility validation.
 - On the tested GIMP 3.2.0 Script-Fu environment, the legacy `gimp-pdb-query` and `gimp-pdb-proc-exists` helper bindings are unavailable. The typed PDB adapter therefore retains its explicit unavailable fallback; the filter bindings are validated independently. A future bridge adapter should use a supported GIMP-side PDB or GObject-introspection channel rather than guessing signatures.
 - Export metadata behavior uses GIMP’s configured defaults in v0.1; no hidden metadata is added or removed.
 - The tested GIMP 3.2.0 Script-Fu bridge does not expose `gimp-file-export`; `export_image`
   refuses to fall back to `gimp-file-save`, which could change the open document's associated
   file. Use GIMP's own export UI until a supported export binding is available.
 - The initial adjustment tools call stable legacy PDB adjustment procedures that GIMP 3.2 marks deprecated in favor of non-destructive filters. Only brightness/contrast and Gaussian blur have non-destructive high-level slices so far.
-- Native foreground extraction was probed and is unavailable through the tested GIMP 3.2.0
-  Script-Fu bridge. The local semantic architecture is available, but SAM 3 is optional and is
-  not claimed as live unless a configured worker reports usable text segmentation. Without a
-  capable worker, `auto` uses the bounded high-key contiguous-color fallback. Snow, foliage, and
-  subjects with similar light colors can require manual refinement; the operation refuses an
-  existing selection or source mask and rejects pathological masks.
+- Native foreground extraction is unavailable through the tested GIMP 3.2.0 Script-Fu bridge.
+  CLIPSeg is genuinely text-prompted but produces a coarse 352×352 semantic probability mask;
+  upsampling can leave halos, soften fur, omit thin whiskers, or retain nearby regions. It does not
+  separate instances or discover/language-label every object. Without a capable worker, `auto`
+  retains the bounded high-key fallback.
 - The tested GIMP 3.2.0 bridge safely supports duplicate-image PNG snapshots through
   `gimp-image-duplicate` plus `gimp-file-save` on the duplicate. The unsafe save fallback remains
   prohibited for user images. The mask import bridge preserves partial alpha observed through
-  GIMP's selection-to-mask path, but is not a learned hair-matting engine.
+  GIMP's selection-to-mask path, but GIMP image-space mask encoding changes the raw sampled byte
+  values for partial alpha. This is not a learned hair/fur-matting engine.
+- Independently prompted concept masks can overlap. The default and currently supported policy is
+  `report`: layers retain their masks, overlap statistics are returned, and remainder background
+  uses their soft union. No arbitrary first-concept ownership is imposed.
+- The Quadro P620 probe found compute capability 6.1 and 2 GiB total VRAM, with roughly 1.0–1.2 GiB
+  free under KDE/Wayland. The installed Torch 2.13 build was CPU-only. CLIPSeg was tested on CPU;
+  SAM 3 was researched but neither installed nor inferred on this hardware.
 - `get_active_image` uses GIMP’s default display when the Script-Fu context provides one. If that helper is unavailable and exactly one image is open, it returns that image with the same documented single-image fallback used by `get_current_context`; multiple open images remain ambiguous.
 - Selected-layer control and recursive group inspection were validated against GIMP 3.2.0. The bridge rejects empty selection vectors, validates layer/image ownership, and reads selection state back after setting it.
 - Multi-call layer creation and duplication are grouped into one GIMP undo step. Additional composite operations should adopt the same internal helper as they are added.
@@ -233,10 +285,12 @@ See [SECURITY.md](SECURITY.md). In brief:
 4. Validate document context and multi-layer selection semantics against additional GIMP 3.x releases and multi-window setups.
 5. Add explicit export metadata policies and more file-format option models.
 6. Add safe, persistent capability caching with GIMP version invalidation.
-7. Install and audit a separate SAM 3 worker adapter, then demonstrate genuine local text-prompted
-   segmentation on the fox benchmark without adding ML dependencies to the core package.
+7. Compose a lightweight box/point segmenter with CLIPSeg when it measurably improves fine
+   boundaries and instance separation on constrained hardware.
 8. Add a local alpha-matting provider behind `MaskRefiner` when a supported lightweight runtime is
    available; keep semantic segmentation and matting evidence separate.
+9. Implement automatic object proposals with stable unlabeled candidate IDs, boxes, areas, and
+   previews before adding any semantic labels not produced by a model.
 
 ## Development
 

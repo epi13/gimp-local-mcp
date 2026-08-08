@@ -19,6 +19,8 @@ def _live_service() -> GimpService:
         except GimpConnectionError:
             pytest.skip("GIMP Script-Fu server is not available")
         version = unwrap(parse_scheme(probe.execute("(gimp-version)")))
+        if isinstance(version, list) and len(version) == 1:
+            version = version[0]
         if not isinstance(version, str) or not version.startswith("3."):
             pytest.skip(f"GIMP 3 is required for live state tests; found {version!r}")
     finally:

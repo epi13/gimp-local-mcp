@@ -140,6 +140,22 @@ class VisionCapabilities:
     backend: str | None = None
     reason: str | None = None
     runtime: str | None = None
+    device: str | None = None
+    accelerator: str | None = None
+    dtype: str | None = None
+    torch_version: str | None = None
+    torch_cuda_version: str | None = None
+    cuda_available: bool | None = None
+    gpu_name: str | None = None
+    compute_capability: str | None = None
+    total_vram_bytes: int | None = None
+    available_vram_bytes: int | None = None
+    model_memory_bytes: int | None = None
+    checkpoint_available: bool | None = None
+    model_load_success: bool | None = None
+    test_inference_success: bool | None = None
+    instance_segmentation: bool = False
+    automatic_discovery: bool = False
 
     def __post_init__(self) -> None:
         _bounded_text(self.provider, "provider", 64)
@@ -147,6 +163,24 @@ class VisionCapabilities:
             _bounded_text(self.model, "model", 128)
         if self.reason is not None:
             _bounded_text(self.reason, "reason", 1024)
+        for name in (
+            "device",
+            "accelerator",
+            "dtype",
+            "torch_version",
+            "torch_cuda_version",
+            "gpu_name",
+            "compute_capability",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _bounded_text(value, name, 256)
+        for name in ("total_vram_bytes", "available_vram_bytes", "model_memory_bytes"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or null")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -159,13 +193,40 @@ class VisionCapabilities:
             "backend": self.backend,
             "reason": self.reason,
             "runtime": self.runtime,
+            "device": self.device,
+            "accelerator": self.accelerator,
+            "dtype": self.dtype,
+            "torch_version": self.torch_version,
+            "torch_cuda_version": self.torch_cuda_version,
+            "cuda_available": self.cuda_available,
+            "gpu_name": self.gpu_name,
+            "compute_capability": self.compute_capability,
+            "total_vram_bytes": self.total_vram_bytes,
+            "available_vram_bytes": self.available_vram_bytes,
+            "model_memory_bytes": self.model_memory_bytes,
+            "checkpoint_available": self.checkpoint_available,
+            "model_load_success": self.model_load_success,
+            "test_inference_success": self.test_inference_success,
+            "instance_segmentation": self.instance_segmentation,
+            "automatic_discovery": self.automatic_discovery,
         }
 
     @classmethod
     def from_dict(cls, value: Any) -> VisionCapabilities:
         if not isinstance(value, dict):
             raise ValueError("capabilities must be an object")
-        for field_name in ("available", "text_segmentation", "visual_prompts", "soft_alpha"):
+        for field_name in (
+            "available",
+            "text_segmentation",
+            "visual_prompts",
+            "soft_alpha",
+            "cuda_available",
+            "checkpoint_available",
+            "model_load_success",
+            "test_inference_success",
+            "instance_segmentation",
+            "automatic_discovery",
+        ):
             if field_name in value and not isinstance(value[field_name], bool):
                 raise ValueError(f"capability {field_name} must be boolean")
         return cls(
@@ -178,6 +239,22 @@ class VisionCapabilities:
             value.get("backend"),
             value.get("reason"),
             value.get("runtime"),
+            value.get("device"),
+            value.get("accelerator"),
+            value.get("dtype"),
+            value.get("torch_version"),
+            value.get("torch_cuda_version"),
+            value.get("cuda_available"),
+            value.get("gpu_name"),
+            value.get("compute_capability"),
+            value.get("total_vram_bytes"),
+            value.get("available_vram_bytes"),
+            value.get("model_memory_bytes"),
+            value.get("checkpoint_available"),
+            value.get("model_load_success"),
+            value.get("test_inference_success"),
+            value.get("instance_segmentation") is True,
+            value.get("automatic_discovery") is True,
         )
 
 

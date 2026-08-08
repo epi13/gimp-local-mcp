@@ -57,3 +57,11 @@ def test_vision_command_requires_a_provider(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("GIMP_MCP_VISION_COMMAND", "python worker.py")
     with pytest.raises(ConfigurationError, match="requires"):
         Config.from_env().validate()
+
+
+def test_vision_device_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIMP_MCP_VISION_DEVICE", "cpu")
+    assert Config.from_env().vision_device == "cpu"
+    monkeypatch.setenv("GIMP_MCP_VISION_DEVICE", "overclocked-cloud")
+    with pytest.raises(ConfigurationError, match="DEVICE"):
+        Config.from_env()

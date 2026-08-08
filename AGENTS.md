@@ -15,6 +15,10 @@
   snapshots use temporary duplicate GIMP images, and mask artifacts use bounded lossless PNGs.
 - Keep semantic segmentation, alpha refinement/matting, provider confidence, and ground-truth
   quality evidence as separate concepts; do not claim segmentation accuracy without ground truth.
+- User-requested semantic extraction should leave persistent, clearly named GIMP layers. Automated
+  integration fixtures clean up; an explicit final benchmark intentionally keeps its useful result.
+- Derive background/remainder masks from the exact complement of the accepted foreground union.
+  Report independently prompted overlap instead of silently assigning ownership.
 
 ## Working safely
 

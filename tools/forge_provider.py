@@ -22,9 +22,14 @@ METHODS = [
     "ruff-check",
     "unit-tests",
     "vision-unit-tests",
+    "layer-decomposition-tests",
     "live-gimp",
     "live-subject-isolation",
     "live-vision-bridge",
+    "live-layer-decomposition",
+    "vision-provider-status",
+    "semantic-inference",
+    "semantic-quality-uncertainty",
     "pip-check",
 ]
 _MAX_OUTPUT = 65536
@@ -33,6 +38,7 @@ _COMMANDS = {
     "ruff-check": ["ruff", "check", "src", "tests", "tools"],
     "unit-tests": ["pytest", "-q"],
     "vision-unit-tests": ["pytest", "-q", "tests/test_vision.py", "tests/test_vision_routing.py"],
+    "layer-decomposition-tests": ["pytest", "-q", "tests/test_layer_decomposition.py"],
     "live-gimp": ["pytest", "-m", "integration", "-q"],
     "live-subject-isolation": [
         "pytest",
@@ -44,6 +50,21 @@ _COMMANDS = {
         "synthetic_layer_mask",
     ],
     "live-vision-bridge": ["pytest", "-m", "integration", "-q", "tests/test_live_vision.py"],
+    "live-layer-decomposition": [
+        "pytest",
+        "-m",
+        "integration",
+        "-q",
+        "tests/test_live_vision.py",
+        "-k",
+        "complementary_layer_group",
+    ],
+    "vision-provider-status": [
+        "python",
+        "tools/vision/provider_check.py",
+        "--capabilities-only",
+    ],
+    "semantic-inference": ["python", "tools/vision/provider_check.py"],
     "pip-check": ["python", "-m", "pip", "check"],
 }
 
@@ -121,7 +142,7 @@ def _check_result(
     elif method == "ruff-check":
         passed = returncode == 0 and stdout.strip() == "All checks passed!" and not stderr.strip()
         summary = "Ruff lint verification completed without findings."
-    elif method in {"unit-tests", "vision-unit-tests"}:
+    elif method in {"unit-tests", "vision-unit-tests", "layer-decomposition-tests"}:
         passed_count = re.search(r"(\d+) passed", stdout)
         passed = returncode == 0 and passed_count is not None and " failed" not in stdout
         summary = (
@@ -129,8 +150,16 @@ def _check_result(
             if method == "unit-tests"
             else "The deterministic local vision protocol and routing tests completed "
             "without failures."
+            if method == "vision-unit-tests"
+            else "Complementary mask algebra, bounded decomposition, overlap reporting, and "
+            "rollback tests completed without failures."
         )
-    elif method in {"live-gimp", "live-subject-isolation", "live-vision-bridge"}:
+    elif method in {
+        "live-gimp",
+        "live-subject-isolation",
+        "live-vision-bridge",
+        "live-layer-decomposition",
+    }:
         passed_count = re.search(r"(\d+) passed", stdout)
         skipped = "skipped" in stdout.lower()
         passed = returncode == 0 and passed_count is not None and not skipped
@@ -147,6 +176,30 @@ def _check_result(
                 limitations=["a skipped live integration test is not execution evidence"],
                 witnesses=witness,
             )
+    elif method in {"vision-provider-status", "semantic-inference"}:
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            payload = {}
+        expected = (
+            payload.get("provider_available") is True
+            if method == "vision-provider-status"
+            else payload.get("semantic_inference") is True
+        )
+        if returncode == 2:
+            return _response(
+                request,
+                "UNKNOWN",
+                "The optional real local vision provider is unavailable in this environment.",
+                limitations=[str(payload.get("reason") or "provider did not establish readiness")],
+                witnesses=witness,
+            )
+        passed = returncode == 0 and expected
+        summary = (
+            "The configured provider reported checkpoint, model-load, and self-test readiness."
+            if method == "vision-provider-status"
+            else "The configured provider completed an actual bounded local segmentation inference."
+        )
     else:
         passed = (
             returncode == 0 and stdout.strip() == "No broken requirements found." and not stderr
@@ -209,6 +262,16 @@ def handle(request: dict[str, Any]) -> dict[str, object]:
             "UNKNOWN",
             "the requested project check is unsupported",
             unsupported=["unsupported-check"],
+        )
+    if method == "semantic-quality-uncertainty":
+        return _response(
+            request,
+            "UNKNOWN",
+            "No ground-truth mask is available, so semantic pixel accuracy is not established.",
+            limitations=[
+                "provider confidence and mask proxies are not accuracy or IoU evidence"
+            ],
+            unsupported=["semantic-quality-proof-without-ground-truth"],
         )
     return _check_result(method, _run(method), request)
 
