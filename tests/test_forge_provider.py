@@ -41,6 +41,12 @@ def test_forge_provider_parses_successful_fixed_checks() -> None:
         )["status"]
         == "PASS"
     )
+    assert (
+        _check_result(
+            "vision-unit-tests", (0, "17 passed in 0.2s\n", ""), request("vision-unit-tests")
+        )["status"]
+        == "PASS"
+    )
 
 
 def test_forge_provider_distinguishes_live_skip_from_pass() -> None:

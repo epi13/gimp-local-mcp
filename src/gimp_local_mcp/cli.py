@@ -40,11 +40,17 @@ def _doctor() -> int:
         service = GimpService(config)
         try:
             status = service.status()
+            vision = service.vision_status()
         finally:
             service.close()
         print(
             f"Script-Fu: reachable; GIMP {status['gimp_version']}; "
             f"open images {status['open_image_count']}"
+        )
+        print(
+            f"Vision: {vision['provider']} "
+            f"({'available' if vision['available'] else 'unavailable'})"
+            + (f"; {vision['reason']}" if vision.get("reason") else "")
         )
         return 0
     except (GimpMcpError, OSError) as exc:

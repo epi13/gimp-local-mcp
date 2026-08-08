@@ -18,8 +18,10 @@ tree and selected-layer IDs before targeting a drawable. Prefer ergonomic tools 
 and use structured PDB discovery/invocation for unsupported operations. Use identifiers
 returned by this server. Preserve user work and never overwrite files without explicit
 permission. Subject isolation duplicates its explicit source layer and applies a bounded layer
-mask; it does not claim semantic segmentation accuracy. GIMP performs all image manipulation
-locally; this server does not generate replacement pixels or send images to cloud services."""
+mask. Configured local vision workers support semantic prompts such as “red fox”; otherwise auto
+mode uses the bounded high-key fallback. Neither mode claims semantic segmentation accuracy.
+GIMP and vision inference remain local; this server does not generate replacement pixels or send
+images to cloud services."""
 
 mcp = MCPServer(
     "gimp-local-mcp",
@@ -329,6 +331,55 @@ def set_layer_mask_enabled(image_id: int, layer_id: int, enabled: bool) -> dict[
 
 
 @mcp.tool()
+def vision_status() -> dict[str, Any]:
+    """Report the configured local vision provider and its capabilities."""
+
+    return _service.vision_status()
+
+
+@mcp.tool()
+def segment_subject(
+    image_id: int,
+    layer_id: int,
+    prompt: str,
+    max_candidates: int = 3,
+    minimum_score: float = 0.0,
+    mode: str = "semantic",
+) -> dict[str, Any]:
+    """Run local semantic segmentation against a temporary current-GIMP snapshot."""
+
+    return _service.segment_subject(
+        image_id,
+        layer_id,
+        prompt,
+        max_candidates=max_candidates,
+        minimum_score=minimum_score,
+        mode=mode,
+    )
+
+
+@mcp.tool()
+def isolate_subject_vision(
+    image_id: int,
+    layer_id: int,
+    prompt: str,
+    max_candidates: int = 3,
+    minimum_score: float = 0.0,
+    mode: str = "semantic",
+) -> dict[str, Any]:
+    """Duplicate a layer and apply a local semantic mask non-destructively."""
+
+    return _service.isolate_subject_vision(
+        image_id,
+        layer_id,
+        prompt,
+        max_candidates=max_candidates,
+        minimum_score=minimum_score,
+        mode=mode,
+    )
+
+
+@mcp.tool()
 def isolate_subject(
     image_id: int,
     layer_id: int,
@@ -336,8 +387,9 @@ def isolate_subject(
     background_threshold: int = 48,
     refinement_threshold: int = 24,
     feather: int = 1,
+    prompt: str = "subject",
 ) -> dict[str, Any]:
-    """Duplicate a layer and create a bounded non-destructive high-key subject mask."""
+    """Use local semantic vision when available, otherwise the bounded high-key fallback."""
 
     return _service.isolate_subject(
         image_id,
@@ -346,6 +398,7 @@ def isolate_subject(
         background_threshold,
         refinement_threshold,
         feather,
+        prompt,
     )
 
 

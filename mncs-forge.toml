@@ -55,9 +55,9 @@ version = "0.1"
 command = ["python", "tools/forge_provider.py"]
 transport = "stdio-jsonl"
 required = true
-capabilities = ["ruff-format", "ruff-check", "unit-tests", "live-gimp", "live-subject-isolation", "pip-check"]
+capabilities = ["ruff-format", "ruff-check", "unit-tests", "vision-unit-tests", "live-gimp", "live-subject-isolation", "live-vision-bridge", "pip-check"]
 supported_constructs = ["fixed-command-semantic-parsing", "live-gimp-availability", "live-subject-isolation-evidence"]
-unsupported_constructs = ["arbitrary-commands", "whole-project-proof"]
+unsupported_constructs = ["arbitrary-commands", "whole-project-proof", "semantic-quality-proof", "sam3-availability-proof"]
 limitations = ["development evidence only; commands use the ambient project environment"]
 
 [[workflows]]
@@ -69,6 +69,42 @@ command = ["python", "tools/forge_provider.py"]
 provider_protocol = true
 provider_id = "gimp-local-mcp-project-checks"
 disclosure = "compact"
+
+[[verifiers]]
+id = "project.vision-unit-tests"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "vision-unit-tests"
+claim = "Deterministic local vision protocol, artifact, provider, and routing tests completed without failures."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "tests"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["This verifies the optional provider boundary, not SAM model availability or segmentation quality."]
+assumptions = ["pytest output contains a decisive passing summary"]
+timeout_seconds = 60
+cost = "medium"
+uncertainty_classes = ["test-failure", "provider-availability"]
+
+[[verifiers]]
+id = "project.live-vision-bridge"
+version = "0.1"
+workflow = "project-checks"
+provider = "gimp-local-mcp-project-checks"
+method = "live-vision-bridge"
+claim = "The live GIMP snapshot and soft-alpha mask bridge completed a deterministic non-destructive workflow."
+category = "inspection"
+modes = ["development"]
+artifact_types = ["source", "integration"]
+scopes = ["candidate"]
+input_kinds = ["candidate_identity"]
+limitations = ["This uses a deterministic fake local provider and does not establish SAM availability or semantic quality."]
+assumptions = ["the configured loopback Script-Fu endpoint is the GIMP under test"]
+timeout_seconds = 120
+cost = "high"
+uncertainty_classes = ["live-dependency", "provider-availability"]
 
 [[verifiers]]
 id = "project.ruff-format"

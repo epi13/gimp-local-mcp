@@ -21,8 +21,10 @@ METHODS = [
     "ruff-format",
     "ruff-check",
     "unit-tests",
+    "vision-unit-tests",
     "live-gimp",
     "live-subject-isolation",
+    "live-vision-bridge",
     "pip-check",
 ]
 _MAX_OUTPUT = 65536
@@ -30,6 +32,7 @@ _COMMANDS = {
     "ruff-format": ["ruff", "format", "--check", "src", "tests", "tools"],
     "ruff-check": ["ruff", "check", "src", "tests", "tools"],
     "unit-tests": ["pytest", "-q"],
+    "vision-unit-tests": ["pytest", "-q", "tests/test_vision.py", "tests/test_vision_routing.py"],
     "live-gimp": ["pytest", "-m", "integration", "-q"],
     "live-subject-isolation": [
         "pytest",
@@ -40,6 +43,7 @@ _COMMANDS = {
         "-k",
         "synthetic_layer_mask",
     ],
+    "live-vision-bridge": ["pytest", "-m", "integration", "-q", "tests/test_live_vision.py"],
     "pip-check": ["python", "-m", "pip", "check"],
 }
 
@@ -117,11 +121,16 @@ def _check_result(
     elif method == "ruff-check":
         passed = returncode == 0 and stdout.strip() == "All checks passed!" and not stderr.strip()
         summary = "Ruff lint verification completed without findings."
-    elif method == "unit-tests":
+    elif method in {"unit-tests", "vision-unit-tests"}:
         passed_count = re.search(r"(\d+) passed", stdout)
         passed = returncode == 0 and passed_count is not None and " failed" not in stdout
-        summary = "The repository unit test suite completed without failures."
-    elif method in {"live-gimp", "live-subject-isolation"}:
+        summary = (
+            "The repository unit test suite completed without failures."
+            if method == "unit-tests"
+            else "The deterministic local vision protocol and routing tests completed "
+            "without failures."
+        )
+    elif method in {"live-gimp", "live-subject-isolation", "live-vision-bridge"}:
         passed_count = re.search(r"(\d+) passed", stdout)
         skipped = "skipped" in stdout.lower()
         passed = returncode == 0 and passed_count is not None and not skipped

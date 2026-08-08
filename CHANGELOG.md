@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added an optional local semantic-vision subsystem with typed capability/request/candidate/result
+  models, bounded JSONL worker protocol, strict lossless PNG mask artifacts, resident trusted
+  worker client, and an explicit provider-alpha refinement boundary. The core package remains
+  Python-only and does not install SAM, PyTorch, CUDA, Transformers, checkpoints, or cloud clients.
+- Added safe duplicate-image GIMP snapshots and a temporary RGBA alpha bridge into the existing
+  layer-mask gateway. Added `vision_status`, `segment_subject`, and `isolate_subject_vision`; auto
+  subject isolation prefers a capable local semantic provider and otherwise retains the explicit
+  high-key heuristic fallback. Added deterministic fake-worker tests and live synthetic bridge
+  coverage. The SAM 3 worker reports unavailable until a separately installed audited adapter is
+  configured.
 - Added a reusable structured layer-mask gateway with safe mask inspection, creation, attachment,
   and enable/disable controls. Added bounded non-destructive `isolate_subject` support using a
   border-seeded high-key contiguous-color fallback, baseline/refined mask proxy metrics, and

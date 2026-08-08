@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import os
+import shlex
 from dataclasses import dataclass
 
 from .errors import ConfigurationError
@@ -32,6 +34,9 @@ class Config:
     log_level: str = "INFO"
     max_response_bytes: int = 65_535
     allow_remote: bool = False
+    vision_provider: str = "none"
+    vision_command: tuple[str, ...] | None = None
+    vision_timeout: float = 60.0
 
     @classmethod
     def from_env(cls) -> Config:
@@ -51,9 +56,32 @@ class Config:
                 parsed = default if value is None else float(value)
             except ValueError as exc:
                 raise ConfigurationError(f"{name} must be a number, got {value!r}") from exc
-            if parsed <= 0:
+            if not math.isfinite(parsed) or parsed <= 0:
                 raise ConfigurationError(f"{name} must be greater than zero")
             return parsed
+
+        vision_provider = os.getenv("GIMP_MCP_VISION_PROVIDER", "none").strip().lower()
+        if (
+            not vision_provider
+            or len(vision_provider) > 64
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789_-"
+                for character in vision_provider
+            )
+        ):
+            raise ConfigurationError("GIMP_MCP_VISION_PROVIDER contains unsupported characters")
+        command_text = os.getenv("GIMP_MCP_VISION_COMMAND")
+        vision_command: tuple[str, ...] | None = None
+        if command_text and command_text.strip():
+            try:
+                parts = tuple(shlex.split(command_text))
+            except ValueError as exc:
+                raise ConfigurationError(
+                    "GIMP_MCP_VISION_COMMAND is not valid shell-like syntax"
+                ) from exc
+            if not parts or len(parts) > 32 or any(len(part) > 4096 for part in parts):
+                raise ConfigurationError("GIMP_MCP_VISION_COMMAND is outside the safety bounds")
+            vision_command = parts
 
         log_level = os.getenv("GIMP_MCP_LOG_LEVEL", "INFO").upper()
         if log_level not in logging.getLevelNamesMapping():
@@ -67,6 +95,9 @@ class Config:
             log_level=log_level,
             max_response_bytes=integer("GIMP_MCP_MAX_RESPONSE_BYTES", 65_535, 1, 65_535),
             allow_remote=_env_bool("GIMP_MCP_ALLOW_REMOTE", False),
+            vision_provider=vision_provider,
+            vision_command=vision_command,
+            vision_timeout=positive_float("GIMP_MCP_VISION_TIMEOUT", 60.0),
         )
 
     def validate(self) -> None:
@@ -87,3 +118,27 @@ class Config:
             raise ConfigurationError("GIMP port must be between 1 and 65535")
         if self.max_response_bytes > 65_535:
             raise ConfigurationError("Script-Fu response size cannot exceed 65535 bytes")
+        if (
+            not self.vision_provider
+            or len(self.vision_provider) > 64
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789_-"
+                for character in self.vision_provider
+            )
+        ):
+            raise ConfigurationError("Vision provider name contains unsupported characters")
+        if not math.isfinite(self.vision_timeout) or not 0 < self.vision_timeout <= 600:
+            raise ConfigurationError("Vision worker timeout must be between zero and 600 seconds")
+        if self.vision_provider == "none" and self.vision_command is not None:
+            raise ConfigurationError(
+                "GIMP_MCP_VISION_COMMAND requires a configured vision provider"
+            )
+        if self.vision_command is not None and (
+            not self.vision_command
+            or len(self.vision_command) > 32
+            or any(
+                not isinstance(part, str) or not part or len(part) > 4096
+                for part in self.vision_command
+            )
+        ):
+            raise ConfigurationError("GIMP_MCP_VISION_COMMAND is outside the safety bounds")

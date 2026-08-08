@@ -3,8 +3,10 @@
     "project.ruff-format",
     "project.ruff-check",
     "project.unit-tests",
+    "project.vision-unit-tests",
     "project.live-gimp",
     "project.live-subject-isolation",
+    "project.live-vision-bridge",
     "project.pip-check"
   ]
 }

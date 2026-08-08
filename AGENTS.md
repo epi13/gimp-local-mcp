@@ -11,6 +11,10 @@
 - High-level tools should compose the service, serializers, transport, and PDB gateway rather than duplicate them.
 - Preserve user files, explicit metadata choices, and GIMP undo history. Never overwrite by default.
 - Use stable GIMP object IDs in MCP-facing state and do not invent properties GIMP has not exposed.
+- Keep semantic vision optional and local: worker commands come from trusted configuration, image
+  snapshots use temporary duplicate GIMP images, and mask artifacts use bounded lossless PNGs.
+- Keep semantic segmentation, alpha refinement/matting, provider confidence, and ground-truth
+  quality evidence as separate concepts; do not claim segmentation accuracy without ground truth.
 
 ## Working safely
 

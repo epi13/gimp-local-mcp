@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import math
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,10 @@ from .gimp.scheme import parse_scheme, unwrap
 from .gimp.serializer import SchemeNull, SchemeSymbol, SchemeVector, scheme_call, with_v3
 from .gimp.transport import ScriptFuClient
 from .models import ImageInfo, LayerInfo, LayerNode
+from .vision import VisionClient
+from .vision.artifacts import MaskArtifactError, validate_mask_png
+from .vision.models import SegmentationRequest, SegmentationResult
+from .vision.refinement import IdentityMaskRefiner
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +63,17 @@ class GimpService:
         self.pdb = PdbInvoker(self.client, self.catalog)
         self.filters = DrawableFilterGateway(self.evaluate)
         self.masks = LayerMaskGateway(self.evaluate)
+        self.vision = VisionClient(self.config)
+        self.mask_refiner = IdentityMaskRefiner()
 
     def close(self) -> None:
+        self.vision.close()
         self.client.close()
+
+    def vision_status(self) -> dict[str, Any]:
+        """Report local provider capability without exposing worker internals."""
+
+        return self.vision.capabilities().as_dict()
 
     def evaluate(self, expression: str) -> Any:
         """Internal evaluation primitive; no MCP tool exposes this method."""
@@ -101,6 +116,8 @@ class GimpService:
                 "multi-layer selection control",
                 "reusable layer masks",
                 "bounded high-key subject isolation",
+                "optional local semantic vision status and segmentation",
+                "non-destructive semantic subject isolation",
             ],
             "limitations": [
                 "The Script-Fu server may not expose a default display; with one open image, "
@@ -111,6 +128,8 @@ class GimpService:
                 "Foreground extraction is unavailable through the tested Script-Fu bridge;\n"
                 "subject isolation uses a border-seeded contiguous-color fallback with\n"
                 "observable matte proxies rather than semantic accuracy.",
+                "Semantic vision is optional and out-of-process; the configured worker must\n"
+                "report text segmentation capability before auto mode selects it.",
             ],
         }
 
@@ -731,7 +750,393 @@ class GimpService:
                 samples.append((x, y, self.masks.validate_alpha(pixel[0])))
         return samples
 
+    @contextmanager
+    def _vision_snapshot(self, image_id: int) -> Iterator[tuple[Path, Path]]:
+        """Save a duplicate GIMP image, never the user's image, to a temp PNG."""
+
+        temporary_directory = Path(tempfile.mkdtemp(prefix="gimp-local-mcp-vision-"))
+        duplicate_id: int | None = None
+        snapshot = temporary_directory / "input.png"
+        try:
+            duplicate_id = _scalar(self.evaluate(scheme_call("gimp-image-duplicate", [image_id])))
+            if not isinstance(duplicate_id, int) or duplicate_id < 0:
+                raise RuntimeError("GIMP did not return a temporary duplicate image ID")
+            self._save(duplicate_id, snapshot)
+            if not snapshot.is_file():
+                raise RuntimeError("GIMP did not create the temporary vision snapshot")
+            yield snapshot, temporary_directory
+        finally:
+            if duplicate_id is not None:
+                try:
+                    self.close_image(duplicate_id, discard=True)
+                except Exception:
+                    logger.exception("failed to close temporary vision image %s", duplicate_id)
+            try:
+                for child in temporary_directory.iterdir():
+                    if child.is_file() or child.is_symlink():
+                        child.unlink()
+                temporary_directory.rmdir()
+            except OSError:
+                logger.exception(
+                    "failed to clean temporary vision snapshot %s", temporary_directory
+                )
+
+    @staticmethod
+    def _vision_request(
+        image_path: Path,
+        output_directory: Path,
+        prompt: str,
+        *,
+        max_candidates: int,
+        minimum_score: float,
+        mode: str,
+    ) -> SegmentationRequest:
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.strip()) > 256:
+            raise ValueError("prompt must be a non-empty string of at most 256 characters")
+        return SegmentationRequest(
+            image_path=image_path,
+            prompt=prompt.strip(),
+            max_candidates=max_candidates,
+            minimum_score=minimum_score,
+            mode=mode,
+            output_directory=output_directory,
+        )
+
+    def _validate_vision_result(
+        self,
+        result: SegmentationResult,
+        output_directory: Path,
+        width: int,
+        height: int,
+        minimum_score: float = 0.0,
+    ) -> SegmentationResult:
+        if not result.candidates:
+            raise RuntimeError("vision provider returned no segmentation candidates")
+        checked = []
+        root = output_directory.resolve()
+        for candidate in result.candidates:
+            artifact_path = candidate.mask.path.resolve()
+            if root not in artifact_path.parents:
+                raise RuntimeError("vision provider mask escaped the temporary artifact directory")
+            try:
+                artifact = validate_mask_png(artifact_path)
+            except (OSError, MaskArtifactError) as exc:
+                raise RuntimeError(
+                    f"vision provider returned an invalid mask artifact: {exc}"
+                ) from exc
+            if artifact.width != width or artifact.height != height:
+                raise RuntimeError("vision provider mask dimensions do not match the source layer")
+            checked.append(
+                type(candidate)(
+                    candidate.candidate_id,
+                    candidate.concept,
+                    candidate.score,
+                    candidate.bounding_box,
+                    artifact,
+                    candidate.width,
+                    candidate.height,
+                    candidate.metadata,
+                )
+            )
+        checked = [
+            candidate
+            for candidate in checked
+            if candidate.score is None or candidate.score >= minimum_score
+        ]
+        if not checked:
+            raise RuntimeError("vision provider returned no candidate meeting minimum_score")
+        return type(result)(
+            result.provider,
+            result.model,
+            tuple(checked),
+            result.runtime_seconds,
+            result.warnings,
+            result.provenance,
+            any(candidate.mask.soft_alpha for candidate in checked),
+        )
+
+    @staticmethod
+    def _local_mask_quality(path: Path, width: int, height: int) -> dict[str, Any]:
+        from .vision.artifacts import read_mask_png
+
+        _artifact, pixels = read_mask_png(path)
+        step = max(1, math.ceil(max(width, height) / 16))
+        xs = sorted(set(range(0, width, step)) | {width - 1})
+        ys = sorted(set(range(0, height, step)) | {height - 1})
+        samples = [(x, y, pixels[y * width + x]) for y in ys for x in xs]
+        return mask_metrics(samples, width, height)
+
+    @staticmethod
+    def _public_vision_result(
+        result: SegmentationResult, width: int, height: int
+    ) -> dict[str, Any]:
+        candidates = []
+        for candidate in result.candidates:
+            candidates.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "concept": candidate.concept,
+                    "score": candidate.score,
+                    "bounding_box": candidate.bounding_box.as_dict()
+                    if candidate.bounding_box
+                    else None,
+                    "width": candidate.width,
+                    "height": candidate.height,
+                    "mask_summary": {
+                        "width": candidate.mask.width,
+                        "height": candidate.mask.height,
+                        "soft_alpha": candidate.mask.soft_alpha,
+                        "quality_proxies": GimpService._local_mask_quality(
+                            candidate.mask.path, width, height
+                        ),
+                        "artifact_retained": False,
+                    },
+                }
+            )
+        return {
+            "provider": result.provider,
+            "model": result.model,
+            "candidates": candidates,
+            "runtime_seconds": result.runtime_seconds,
+            "warnings": list(result.warnings),
+            "provenance": result.provenance,
+            "soft_alpha": result.soft_alpha,
+        }
+
+    def segment_subject(
+        self,
+        image_id: int,
+        layer_id: int,
+        prompt: str,
+        *,
+        max_candidates: int = 3,
+        minimum_score: float = 0.0,
+        mode: str = "semantic",
+    ) -> dict[str, Any]:
+        """Segment a prompt from a temporary current-GIMP snapshot without mutation."""
+
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
+        source = self.get_layer_info(image_id, layer_id)
+        with self._vision_snapshot(image_id) as (snapshot, output_directory):
+            request = self._vision_request(
+                snapshot,
+                output_directory,
+                prompt,
+                max_candidates=max_candidates,
+                minimum_score=minimum_score,
+                mode=mode,
+            )
+            result = self._validate_vision_result(
+                self.vision.segment(request),
+                output_directory,
+                source["width"],
+                source["height"],
+                minimum_score,
+            )
+            return {
+                "status": "completed",
+                "image_id": image_id,
+                "source_layer_id": layer_id,
+                "prompt": prompt.strip(),
+                "result": self._public_vision_result(result, source["width"], source["height"]),
+                "source_preserved": True,
+                "limitations": [
+                    "Provider confidence is not semantic segmentation accuracy.",
+                    "No ground-truth fox alpha matte is available for this image.",
+                ],
+            }
+
+    def _apply_vision_mask(
+        self,
+        image_id: int,
+        layer_id: int,
+        mask_path: Path,
+        width: int,
+        height: int,
+        bridge_directory: Path,
+    ) -> dict[str, Any]:
+        """Load a temporary RGBA alpha bridge and attach it through LayerMaskGateway."""
+
+        from .vision.artifacts import read_mask_png, write_rgba_mask_png
+
+        artifact, pixels = read_mask_png(mask_path)
+        if artifact.width != width or artifact.height != height:
+            raise RuntimeError("vision mask dimensions do not match the working layer")
+        bridge_path = write_rgba_mask_png(
+            bridge_directory / "mask-alpha.png", width, height, pixels
+        )
+        temporary_layer_id: int | None = None
+        try:
+            temporary_layer_id = _scalar(
+                self.evaluate(
+                    scheme_call(
+                        "gimp-file-load-layer",
+                        [SchemeSymbol("RUN-NONINTERACTIVE"), image_id, str(bridge_path)],
+                    )
+                )
+            )
+            if not isinstance(temporary_layer_id, int) or temporary_layer_id < 0:
+                raise RuntimeError("GIMP did not return the temporary vision mask layer")
+            self.evaluate(
+                scheme_call("gimp-image-insert-layer", [image_id, temporary_layer_id, -1, 0])
+            )
+            self.select_layer_alpha(image_id, temporary_layer_id)
+            mask = self.masks.create_and_attach(layer_id, "selection")
+            if mask.mask_id is None:
+                raise RuntimeError("GIMP did not return the attached vision mask identity")
+            return mask.as_dict()
+        finally:
+            if temporary_layer_id is not None:
+                try:
+                    self.delete_layer(image_id, temporary_layer_id)
+                except Exception:
+                    logger.exception("failed to remove temporary vision mask layer")
+            self.evaluate(scheme_call("gimp-selection-none", [image_id]))
+
+    def isolate_subject_vision(
+        self,
+        image_id: int,
+        layer_id: int,
+        prompt: str,
+        *,
+        max_candidates: int = 3,
+        minimum_score: float = 0.0,
+        mode: str = "semantic",
+    ) -> dict[str, Any]:
+        """Duplicate a source layer and apply a local semantic mask non-destructively."""
+
+        self._id(image_id, "image_id")
+        self._id(layer_id, "layer_id")
+        self._assert_item_belongs_to_image(image_id, layer_id)
+        source = self.get_layer_info(image_id, layer_id)
+        if self.masks.get(layer_id).has_mask:
+            raise ValueError("source layer already has a mask; choose an unmasked source layer")
+        if self._selection_snapshot(image_id)["active"]:
+            raise ValueError(
+                "isolate_subject_vision refuses to replace an existing image selection"
+            )
+        source_visibility = source.get("visible")
+        started = time.perf_counter()
+        working_layer_id: int | None = None
+        with self._vision_snapshot(image_id) as (snapshot, output_directory):
+            request = self._vision_request(
+                snapshot,
+                output_directory,
+                prompt,
+                max_candidates=max_candidates,
+                minimum_score=minimum_score,
+                mode=mode,
+            )
+            result = self._validate_vision_result(
+                self.vision.segment(request),
+                output_directory,
+                source["width"],
+                source["height"],
+                minimum_score,
+            )
+            candidate = max(
+                result.candidates, key=lambda item: item.score if item.score is not None else 0.0
+            )
+            refined = self.mask_refiner.refine(candidate.mask)
+            try:
+                working = self.duplicate_layer(image_id, layer_id)
+                working_layer_id = working["layer_id"]
+                label = prompt.strip().replace("\n", " ")[:96]
+                self.rename_layer(working_layer_id, f"MCP Subject: {label}")
+                mask = self._apply_vision_mask(
+                    image_id,
+                    working_layer_id,
+                    refined.mask.path,
+                    source["width"],
+                    source["height"],
+                    output_directory,
+                )
+                quality = self._local_mask_quality(
+                    refined.mask.path, source["width"], source["height"]
+                )
+                if quality["all_transparent"] or quality["all_opaque"]:
+                    raise RuntimeError(
+                        "semantic vision produced a pathological all-transparent or all-opaque mask"
+                    )
+                if source_visibility is True:
+                    self.set_layer_visibility(layer_id, False)
+                self.set_selected_layers(image_id, [working_layer_id])
+                return {
+                    "status": "completed",
+                    "image_id": image_id,
+                    "source_layer_id": layer_id,
+                    "working_layer_id": working_layer_id,
+                    "mask_id": mask["mask_id"],
+                    "prompt": prompt.strip(),
+                    "strategy": "local-semantic-vision",
+                    "provider": result.provider,
+                    "model": result.model,
+                    "candidate": {
+                        "candidate_id": candidate.candidate_id,
+                        "concept": candidate.concept,
+                        "score": candidate.score,
+                        "bounding_box": candidate.bounding_box.as_dict()
+                        if candidate.bounding_box
+                        else None,
+                    },
+                    "refinement": refined.strategy,
+                    "quality": quality,
+                    "quality_is_proxy": True,
+                    "runtime_seconds": round(time.perf_counter() - started, 3),
+                    "source_preserved": True,
+                    "source_visibility_before": source_visibility,
+                    "source_visibility_after": False
+                    if source_visibility is True
+                    else source_visibility,
+                    "warnings": list(result.warnings) + list(refined.warnings),
+                    "limitations": [
+                        "Provider confidence is not semantic segmentation accuracy.",
+                        "The current refiner preserves provider alpha but is not learned "
+                        "alpha matting.",
+                        "No ground-truth fox alpha matte is available for this image.",
+                    ],
+                }
+            except Exception:
+                if working_layer_id is not None:
+                    try:
+                        self.delete_layer(image_id, working_layer_id)
+                    except Exception:
+                        logger.exception("failed to clean up semantic subject layer")
+                raise
+
     def isolate_subject(
+        self,
+        image_id: int,
+        layer_id: int,
+        strategy: str = "auto",
+        background_threshold: int = 48,
+        refinement_threshold: int = 24,
+        feather: int = 1,
+        prompt: str = "subject",
+    ) -> dict[str, Any]:
+        """Select semantic vision when available, otherwise use the explicit heuristic fallback."""
+
+        if strategy not in {"auto", "high-key-background", "border-color", "vision"}:
+            raise ValueError("strategy must be auto, vision, high-key-background, or border-color")
+        if strategy == "vision":
+            return self.isolate_subject_vision(image_id, layer_id, prompt)
+        vision = getattr(self, "vision", None)
+        if strategy == "auto" and vision is not None:
+            capabilities = vision.capabilities()
+            if capabilities.available and capabilities.text_segmentation:
+                return self.isolate_subject_vision(image_id, layer_id, prompt)
+        return self._isolate_subject_heuristic(
+            image_id,
+            layer_id,
+            strategy,
+            background_threshold,
+            refinement_threshold,
+            feather,
+        )
+
+    def _isolate_subject_heuristic(
         self,
         image_id: int,
         layer_id: int,
