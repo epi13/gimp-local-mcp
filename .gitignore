@@ -4,6 +4,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 .venv-vision/
+.venv-vision-cuda/
 dist/
 build/
 *.egg-info/

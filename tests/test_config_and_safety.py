@@ -65,3 +65,18 @@ def test_vision_device_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIMP_MCP_VISION_DEVICE", "overclocked-cloud")
     with pytest.raises(ConfigurationError, match="DEVICE"):
         Config.from_env()
+
+
+def test_vision_placement_configuration_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIMP_MCP_VISION_OFFLOAD", "sequential-cpu")
+    monkeypatch.setenv("GIMP_MCP_VISION_GPU_RESERVE_MIB", "384")
+    monkeypatch.setenv("GIMP_MCP_VISION_MAX_VRAM_MIB", "1536")
+    monkeypatch.setenv("GIMP_MCP_VISION_DTYPE", "float16")
+    config = Config.from_env()
+    assert config.vision_offload == "sequential-cpu"
+    assert config.vision_gpu_reserve_mib == 384
+    assert config.vision_max_vram_mib == 1536
+    assert config.vision_dtype == "float16"
+    monkeypatch.setenv("GIMP_MCP_VISION_OFFLOAD", "pretend")
+    with pytest.raises(ConfigurationError, match="OFFLOAD"):
+        Config.from_env()

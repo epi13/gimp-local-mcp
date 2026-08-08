@@ -17,6 +17,11 @@ GIMP Local MCP is intentionally powerful local automation. Treat the MCP host an
 - The CLIPSeg worker loads only locally cached checkpoints during normal JSONL operation. Its
   `--download-model` mode is an explicit operator setup action and is not reachable from MCP tool
   arguments. Device and model identifiers remain trusted environment configuration.
+- The official SAM 3 adapter also requires an existing absolute checkpoint path and calls the Meta
+  builder with hosted loading disabled. `--download-checkpoint` is a separate authenticated operator
+  action and cannot be selected by an MCP request.
+- Sequential CPU offload uses trusted Accelerate hooks and system RAM as primary weight storage. It
+  does not upload pixels, stream weights from untrusted storage, or eliminate RAM requirements.
 - The structured PDB gateway validates procedure identifiers and serializes values. User strings cannot become Scheme syntax.
 - Request and response bodies are bounded by the Script-Fu protocol’s 16-bit length and the configured response limit.
 
