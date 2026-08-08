@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -9,6 +10,10 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
+from tools.vision.clipseg_worker import (  # noqa: E402
+    WorkerUnavailable,
+    clipseg_mask_settings,
+)
 from tools.vision.runtime import (  # noqa: E402
     MIB,
     CudaDiagnostics,
@@ -19,6 +24,35 @@ from tools.vision.runtime import (  # noqa: E402
     effective_gpu_budget_bytes,
     fallback_policy_after_oom,
 )
+
+
+def test_clipseg_mask_settings_preserve_defaults() -> None:
+    assert clipseg_mask_settings({}) == (0.2, 2.0)
+
+
+def test_clipseg_mask_settings_accept_bounded_overrides() -> None:
+    assert clipseg_mask_settings(
+        {
+            "GIMP_MCP_CLIPSEG_MASK_THRESHOLD": "0.30",
+            "GIMP_MCP_CLIPSEG_MASK_SLOPE": "3",
+        }
+    ) == (0.3, 3.0)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("GIMP_MCP_CLIPSEG_MASK_THRESHOLD", "0"),
+        ("GIMP_MCP_CLIPSEG_MASK_THRESHOLD", "1"),
+        ("GIMP_MCP_CLIPSEG_MASK_SLOPE", "0.1"),
+        ("GIMP_MCP_CLIPSEG_MASK_SLOPE", "9"),
+        ("GIMP_MCP_CLIPSEG_MASK_SLOPE", str(math.inf)),
+        ("GIMP_MCP_CLIPSEG_MASK_THRESHOLD", "not-a-number"),
+    ],
+)
+def test_clipseg_mask_settings_reject_invalid_values(name: str, value: str) -> None:
+    with pytest.raises(WorkerUnavailable, match=name):
+        clipseg_mask_settings({name: value})
 
 
 def diagnostics(*, usable: bool = True, free_mib: int = 1800) -> CudaDiagnostics:

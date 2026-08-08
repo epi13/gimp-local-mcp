@@ -11,6 +11,7 @@ import os
 import platform
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +41,8 @@ from tools.vision.runtime import (  # noqa: E402
 PROTOCOL_VERSION = "0.1"
 MODEL_ID = os.getenv("GIMP_MCP_CLIPSEG_MODEL", "CIDAS/clipseg-rd64-refined")
 MODEL_REVISION = os.getenv("GIMP_MCP_CLIPSEG_REVISION") or None
-MASK_THRESHOLD = 0.2
-MASK_SLOPE = 2.0
+DEFAULT_MASK_THRESHOLD = 0.2
+DEFAULT_MASK_SLOPE = 2.0
 logger = logging.getLogger("gimp-local-mcp.clipseg-worker")
 CLIPSEG_PRELOAD_MODULE_CLASSES = (
     "CLIPSegVisionEmbeddings",
@@ -55,6 +56,29 @@ class WorkerUnavailable(RuntimeError):
 
 class WorkerOutOfMemory(RuntimeError):
     pass
+
+
+def clipseg_mask_settings(environ: Mapping[str, str] | None = None) -> tuple[float, float]:
+    """Read bounded CLIPSeg probability-to-alpha controls from trusted worker config."""
+
+    values = os.environ if environ is None else environ
+
+    def bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+        raw = values.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise WorkerUnavailable(f"{name} must be a finite number") from exc
+        if not math.isfinite(value) or not minimum <= value <= maximum:
+            raise WorkerUnavailable(f"{name} must be between {minimum} and {maximum}")
+        return value
+
+    return (
+        bounded_float("GIMP_MCP_CLIPSEG_MASK_THRESHOLD", DEFAULT_MASK_THRESHOLD, 0.01, 0.99),
+        bounded_float("GIMP_MCP_CLIPSEG_MASK_SLOPE", DEFAULT_MASK_SLOPE, 0.25, 8.0),
+    )
 
 
 class ClipSegRuntime:
@@ -75,6 +99,8 @@ class ClipSegRuntime:
         self.self_test_success = False
         self.placement_attempts: list[str] = []
         self.oom_recovery_path: list[str] = []
+        self.mask_threshold = DEFAULT_MASK_THRESHOLD
+        self.mask_slope = DEFAULT_MASK_SLOPE
 
     def _import_dependencies(self) -> tuple[Any, Any, Any, Any]:
         try:
@@ -171,6 +197,7 @@ class ClipSegRuntime:
         torch, image_type, model_type, processor_type = self._import_dependencies()
         self.torch = torch
         self.image_type = image_type
+        self.mask_threshold, self.mask_slope = clipseg_mask_settings()
         self.policy = RuntimePolicy.from_env()
         self._cuda_diagnostics = collect_cuda_diagnostics(torch)
         self.diagnostics = self._cuda_diagnostics.as_dict()
@@ -281,6 +308,8 @@ class ClipSegRuntime:
             "rss_peak_bytes": rss_peak_bytes(),
             "model_load_seconds": self.load_seconds,
             "test_inference_seconds": self.self_test_seconds,
+            "mask_threshold": self.mask_threshold,
+            "mask_slope": self.mask_slope,
         }
 
     def segment(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -306,8 +335,8 @@ class ClipSegRuntime:
             mode="bilinear",
             align_corners=False,
         ).squeeze()
-        pivot = math.log(MASK_THRESHOLD / (1 - MASK_THRESHOLD))
-        alpha = self.torch.sigmoid((logits - pivot) * MASK_SLOPE).float().cpu()
+        pivot = math.log(self.mask_threshold / (1 - self.mask_threshold))
+        alpha = self.torch.sigmoid((logits - pivot) * self.mask_slope).float().cpu()
         pixels = (alpha * 255).clamp(0, 255).byte().numpy().tobytes()
         from gimp_local_mcp.vision.artifacts import write_mask_png
 
@@ -354,8 +383,8 @@ class ClipSegRuntime:
                     "height": image.height,
                     "metadata": {
                         "semantic_probability_mask": True,
-                        "mask_threshold": MASK_THRESHOLD,
-                        "mask_slope": MASK_SLOPE,
+                        "mask_threshold": self.mask_threshold,
+                        "mask_slope": self.mask_slope,
                         "peak_activation": float(alpha.max()),
                         "mean_activation": float(alpha.mean()),
                     },
